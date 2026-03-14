@@ -335,4 +335,46 @@ function runMain(ACCOUNT_CONFIG) {
     try {
       var d = u.split('/')[2].split(':')[0].toLowerCase();
       return (d === CONFIG.ALLOWED_DOMAIN || d.endsWith('.' + CONFIG.ALLOWED_DOMAIN));
-    } catch(e) { return false;
+    } catch(e) { return false; }
+  }
+
+  function getYesterdayDate_() {
+    var d    = new Date();
+    d.setDate(d.getDate() - 1);
+    var yyyy = d.getFullYear();
+    var mm   = ('0' + (d.getMonth() + 1)).slice(-2);
+    var dd   = ('0' + d.getDate()).slice(-2);
+    return yyyy + '-' + mm + '-' + dd;
+  }
+
+  function tgSend_(txt, CONFIG) {
+    try {
+      UrlFetchApp.fetch('https://api.telegram.org/bot' + CONFIG.TG_TOKEN + '/sendMessage', {
+        method:             'post',
+        contentType:        'application/json',
+        payload:            JSON.stringify({ chat_id: CONFIG.TG_CHAT_ID, text: txt, parse_mode: 'HTML' }),
+        muteHttpExceptions: true
+      });
+    } catch(e) {}
+  }
+
+  function logDivider_(l) { Logger.log('=== ' + l + ' ==='); }
+
+  function detectAccountEmail_() {
+    try { return DriveApp.getRootFolder().getOwner().getEmail(); } catch(e) { return ''; }
+  }
+
+} // конец runMain()
+```
+
+---
+
+Итого схема выглядит так:
+```
+Loader (в Google Ads) — не трогаешь никогда
+  ↓ меняешь только ACCOUNT_CONFIG вверху
+  SAFETY_LIMIT, EXTRA_LIMIT, ALLOWED_DOMAIN, PLACEMENT_SYNC_HOUR_UTC
+
+ads-master.js (GitHub) — меняешь логику здесь
+  ↓ все аккаунты подтягивают автоматически
+  Supabase, Telegram, вся бизнес-логика
