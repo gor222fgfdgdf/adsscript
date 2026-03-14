@@ -365,16 +365,3 @@ function runMain(ACCOUNT_CONFIG) {
   }
 
 } // конец runMain()
-```
-
----
-
-Итого схема выглядит так:
-```
-Loader (в Google Ads) — не трогаешь никогда
-  ↓ меняешь только ACCOUNT_CONFIG вверху
-  SAFETY_LIMIT, EXTRA_LIMIT, ALLOWED_DOMAIN, PLACEMENT_SYNC_HOUR_UTC
-
-ads-master.js (GitHub) — меняешь логику здесь
-  ↓ все аккаунты подтягивают автоматически
-  Supabase, Telegram, вся бизнес-логика
