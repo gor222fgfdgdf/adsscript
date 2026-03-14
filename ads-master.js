@@ -22,8 +22,6 @@ function runMain(ACCOUNT_CONFIG) {
 
   Logger.log('[CONFIG] SAFETY_LIMIT=' + CONFIG.SAFETY_LIMIT + ' EXTRA_LIMIT=' + CONFIG.EXTRA_LIMIT);
 
-  /* ====================== MAIN ====================== */
-
   var acc  = AdsApp.currentAccount();
   var myId = acc.getCustomerId();
 
