@@ -1,10 +1,10 @@
 /**
- * Google Ads Master Script (v14.7 - Remote hosted)
- * Hosted on GitHub, loaded via eval() from loader script
+ * Google Ads Master Script (v15.0 - Remote hosted, external config)
  */
 
-function runMain() {
+function runMain(ACCOUNT_CONFIG) {
 
+  // Базовый конфиг (не меняется, общий для всех аккаунтов)
   var CONFIG = {
     // --- CREDENTIALS ---
     SUPABASE_URL: 'https://bdnppvkjpknwjlhhaarw.supabase.co',
@@ -14,20 +14,17 @@ function runMain() {
     TABLE_ADS:        'display_ads_registry',
     TABLE_PLACEMENTS: 'placement_stats',
 
-    // --- PLACEMENT SYNC WINDOW (UTC) ---
-    PLACEMENT_SYNC_HOUR_UTC: 10,
-
-    // --- SAFETY LIMITS ---
-    SAFETY_LIMIT: 45,
-    EXTRA_LIMIT:  0,
-
-    ALLOWED_DOMAIN: 'mssg.me',
-
-    // --- NOTIFICATIONS ---
     TG_TOKEN:   '5203374800:AAGZ6T72DxmjVnqbza92O0y2SJyk2lw0Pr4',
     TG_CHAT_ID: 37742949,
-    TZ: 'GMT+03:00'
+
+    // Параметры из loader — мёржим поверх дефолтов
+    SAFETY_LIMIT:            (ACCOUNT_CONFIG && ACCOUNT_CONFIG.SAFETY_LIMIT            != null) ? ACCOUNT_CONFIG.SAFETY_LIMIT            : 45,
+    EXTRA_LIMIT:             (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EXTRA_LIMIT             != null) ? ACCOUNT_CONFIG.EXTRA_LIMIT             : 0,
+    ALLOWED_DOMAIN:          (ACCOUNT_CONFIG && ACCOUNT_CONFIG.ALLOWED_DOMAIN                  ) ? ACCOUNT_CONFIG.ALLOWED_DOMAIN          : 'mssg.me',
+    PLACEMENT_SYNC_HOUR_UTC: (ACCOUNT_CONFIG && ACCOUNT_CONFIG.PLACEMENT_SYNC_HOUR_UTC != null) ? ACCOUNT_CONFIG.PLACEMENT_SYNC_HOUR_UTC : 10
   };
+
+  Logger.log('[CONFIG] SAFETY_LIMIT=' + CONFIG.SAFETY_LIMIT + ' EXTRA_LIMIT=' + CONFIG.EXTRA_LIMIT + ' DOMAIN=' + CONFIG.ALLOWED_DOMAIN);
 
   /* ====================== MAIN ====================== */
 
@@ -36,15 +33,15 @@ function runMain() {
 
   logDivider_('START');
 
-  try { checkSafetyLimitsStrict_(acc, CONFIG); } catch (e) { Logger.log('[ERR][SAFETY] ' + e); }
-  try { syncBidsFromRegistry_(myId, CONFIG); }   catch (e) { Logger.log('[ERR][BIDS] ' + e); }
-  try { syncAdEditsFromRegistry_(myId, CONFIG); } catch (e) { Logger.log('[ERR][AD_EDITS] ' + e); }
-  try { checkAndPauseAds_(CONFIG); }              catch (e) {}
+  try { checkSafetyLimitsStrict_(acc, CONFIG); }  catch (e) { Logger.log('[ERR][SAFETY] ' + e); }
+  try { syncBidsFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][BIDS] ' + e); }
+  try { syncAdEditsFromRegistry_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][AD_EDITS] ' + e); }
+  try { checkAndPauseAds_(CONFIG); }               catch (e) {}
 
   updateAccountRegistry_(acc, CONFIG);
   syncAdsToRegistry_(myId, CONFIG);
 
-  try { maybeSyncPlacementStats_(myId, CONFIG); } catch (e) { Logger.log('[ERR][PLACEMENTS] ' + e); }
+  try { maybeSyncPlacementStats_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][PLACEMENTS] ' + e); }
 
   logDivider_('END');
 
@@ -140,7 +137,7 @@ function runMain() {
       Logger.log('[PLACEMENTS] Batch sent: ' + batch.length + ' rows');
     }
 
-    Logger.log('[PLACEMENTS] Done. Rows synced: ' + total);
+    Logger.log('[PLACEMENTS] Done. Total synced: ' + total);
   }
 
   /* ====================== УПРАВЛЕНИЕ СТАТУСАМИ И URL ====================== */
@@ -152,7 +149,6 @@ function runMain() {
     );
 
     if (!edits || edits.length === 0) return;
-
     Logger.log('[SYNC] Правок найдено: ' + edits.length);
 
     edits.forEach(function(edit) {
@@ -161,8 +157,8 @@ function runMain() {
 
       var ad = adIterator.next();
 
-      if (edit.target_status === 'ENABLED') { ad.enable();  Logger.log('[STATUS] Ad ' + edit.ad_id + ' -> ENABLED'); }
-      if (edit.target_status === 'PAUSED')  { ad.pause();   Logger.log('[STATUS] Ad ' + edit.ad_id + ' -> PAUSED'); }
+      if (edit.target_status === 'ENABLED') { ad.enable(); Logger.log('[STATUS] Ad ' + edit.ad_id + ' -> ENABLED'); }
+      if (edit.target_status === 'PAUSED')  { ad.pause();  Logger.log('[STATUS] Ad ' + edit.ad_id + ' -> PAUSED'); }
 
       if (edit.edit_final_url) {
         ad.urls().setFinalUrl(edit.edit_final_url);
@@ -181,8 +177,8 @@ function runMain() {
 
   function checkSafetyLimitsStrict_(acc, CONFIG) {
     var todayCost  = acc.getStatsFor('TODAY').getCost();
-    var balance    = 0;
     var totalLimit = CONFIG.SAFETY_LIMIT + CONFIG.EXTRA_LIMIT;
+    var balance    = 0;
 
     try {
       var bo = AdsApp.budgetOrders().get();
@@ -339,33 +335,4 @@ function runMain() {
     try {
       var d = u.split('/')[2].split(':')[0].toLowerCase();
       return (d === CONFIG.ALLOWED_DOMAIN || d.endsWith('.' + CONFIG.ALLOWED_DOMAIN));
-    } catch(e) { return false; }
-  }
-
-  function getYesterdayDate_() {
-    var d    = new Date();
-    d.setDate(d.getDate() - 1);
-    var yyyy = d.getFullYear();
-    var mm   = ('0' + (d.getMonth() + 1)).slice(-2);
-    var dd   = ('0' + d.getDate()).slice(-2);
-    return yyyy + '-' + mm + '-' + dd;
-  }
-
-  function tgSend_(txt, CONFIG) {
-    try {
-      UrlFetchApp.fetch('https://api.telegram.org/bot' + CONFIG.TG_TOKEN + '/sendMessage', {
-        method:             'post',
-        contentType:        'application/json',
-        payload:            JSON.stringify({ chat_id: CONFIG.TG_CHAT_ID, text: txt, parse_mode: 'HTML' }),
-        muteHttpExceptions: true
-      });
-    } catch(e) {}
-  }
-
-  function logDivider_(l) { Logger.log('=== ' + l + ' ==='); }
-
-  function detectAccountEmail_() {
-    try { return DriveApp.getRootFolder().getOwner().getEmail(); } catch(e) { return ''; }
-  }
-
-} // конец runMain()
+    } catch(e) { return false;
