@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.2 - Remote hosted, no domain check, fixed email)
+ * Google Ads Master Script (v15.3 - Remote hosted, email via ACCOUNT_CONFIG)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -17,10 +17,11 @@ function runMain(ACCOUNT_CONFIG) {
 
     SAFETY_LIMIT:            (ACCOUNT_CONFIG && ACCOUNT_CONFIG.SAFETY_LIMIT            != null) ? ACCOUNT_CONFIG.SAFETY_LIMIT            : 45,
     EXTRA_LIMIT:             (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EXTRA_LIMIT             != null) ? ACCOUNT_CONFIG.EXTRA_LIMIT             : 0,
-    PLACEMENT_SYNC_HOUR_UTC: (ACCOUNT_CONFIG && ACCOUNT_CONFIG.PLACEMENT_SYNC_HOUR_UTC != null) ? ACCOUNT_CONFIG.PLACEMENT_SYNC_HOUR_UTC : 10
+    PLACEMENT_SYNC_HOUR_UTC: (ACCOUNT_CONFIG && ACCOUNT_CONFIG.PLACEMENT_SYNC_HOUR_UTC != null) ? ACCOUNT_CONFIG.PLACEMENT_SYNC_HOUR_UTC : 10,
+    EMAIL:                   (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EMAIL                           ) ? ACCOUNT_CONFIG.EMAIL                   : ''
   };
 
-  Logger.log('[CONFIG] SAFETY_LIMIT=' + CONFIG.SAFETY_LIMIT + ' EXTRA_LIMIT=' + CONFIG.EXTRA_LIMIT);
+  Logger.log('[CONFIG] SAFETY_LIMIT=' + CONFIG.SAFETY_LIMIT + ' EXTRA_LIMIT=' + CONFIG.EXTRA_LIMIT + ' EMAIL=' + CONFIG.EMAIL);
 
   var acc  = AdsApp.currentAccount();
   var myId = acc.getCustomerId();
@@ -205,7 +206,7 @@ function runMain(ACCOUNT_CONFIG) {
     apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS, {
       uid:         acc.getCustomerId(),
       name:        acc.getName(),
-      email:       detectAccountEmail_(),
+      email:       CONFIG.EMAIL,
       today_cost:  acc.getStatsFor('TODAY').getCost(),
       all_cost:    acc.getStatsFor('ALL_TIME').getCost(),
       current_cpc: activeBid,
@@ -336,9 +337,5 @@ function runMain(ACCOUNT_CONFIG) {
   }
 
   function logDivider_(l) { Logger.log('=== ' + l + ' ==='); }
-
-  function detectAccountEmail_() {
-    try { return Session.getActiveUser().getEmail(); } catch(e) { return ''; }
-  }
 
 } // конец runMain()
