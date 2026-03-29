@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.3 - Remote hosted, email via ACCOUNT_CONFIG)
+ * Google Ads Master Script (v15.4 - with createAdFromRegistry and ALLOWED_UID)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -18,7 +18,8 @@ function runMain(ACCOUNT_CONFIG) {
     SAFETY_LIMIT:            (ACCOUNT_CONFIG && ACCOUNT_CONFIG.SAFETY_LIMIT            != null) ? ACCOUNT_CONFIG.SAFETY_LIMIT            : 45,
     EXTRA_LIMIT:             (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EXTRA_LIMIT             != null) ? ACCOUNT_CONFIG.EXTRA_LIMIT             : 0,
     PLACEMENT_SYNC_HOUR_UTC: (ACCOUNT_CONFIG && ACCOUNT_CONFIG.PLACEMENT_SYNC_HOUR_UTC != null) ? ACCOUNT_CONFIG.PLACEMENT_SYNC_HOUR_UTC : 10,
-    EMAIL:                   (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EMAIL                           ) ? ACCOUNT_CONFIG.EMAIL                   : ''
+    EMAIL:                   (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EMAIL                           ) ? ACCOUNT_CONFIG.EMAIL                   : '',
+    ALLOWED_UID:             (ACCOUNT_CONFIG && ACCOUNT_CONFIG.ALLOWED_UID                     ) ? ACCOUNT_CONFIG.ALLOWED_UID             : null
   };
 
   Logger.log('[CONFIG] SAFETY_LIMIT=' + CONFIG.SAFETY_LIMIT + ' EXTRA_LIMIT=' + CONFIG.EXTRA_LIMIT + ' EMAIL=' + CONFIG.EMAIL);
@@ -31,6 +32,7 @@ function runMain(ACCOUNT_CONFIG) {
   try { checkSafetyLimitsStrict_(acc, CONFIG); }  catch (e) { Logger.log('[ERR][SAFETY] ' + e); }
   try { syncBidsFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][BIDS] ' + e); }
   try { syncAdEditsFromRegistry_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][AD_EDITS] ' + e); }
+  try { createAdFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][CREATE_AD] ' + e); }
 
   updateAccountRegistry_(acc, CONFIG);
   syncAdsToRegistry_(myId, CONFIG);
@@ -38,6 +40,64 @@ function runMain(ACCOUNT_CONFIG) {
   try { maybeSyncPlacementStats_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][PLACEMENTS] ' + e); }
 
   logDivider_('END');
+
+  /* ====================== CREATE AD ====================== */
+
+  function createAdFromRegistry_(myId, CONFIG) {
+    var normalizedCurrent = myId.replace(/-/g, '');
+    var normalizedAllowed = CONFIG.ALLOWED_UID ? CONFIG.ALLOWED_UID.replace(/-/g, '') : null;
+
+    if (!normalizedAllowed || normalizedCurrent !== normalizedAllowed) {
+      Logger.log('[CREATE_AD] Skip — аккаунт не в списке разрешённых');
+      return;
+    }
+
+    var tasks = apiCall_('get',
+      '/rest/v1/' + CONFIG.TABLE_ADS +
+      '?account_id=eq.' + myId +
+      '&needs_create=eq.true' +
+      '&limit=5',
+      null, null, CONFIG
+    );
+
+    if (!tasks || tasks.length === 0) {
+      Logger.log('[CREATE_AD] Нет заданий на создание');
+      return;
+    }
+
+    tasks.forEach(function(task) {
+      try {
+        var agIterator = AdsApp.adGroups()
+          .withCondition('Status = ENABLED')
+          .withCondition('CampaignType = DISPLAY')
+          .get();
+
+        if (!agIterator.hasNext()) {
+          Logger.log('[CREATE_AD] Нет активных групп объявлений');
+          return;
+        }
+
+        var adGroup = agIterator.next();
+
+        adGroup.newAd().responsiveDisplayAdBuilder()
+          .withBusinessName(task.business_name  || 'narivexoria')
+          .withHeadline(task.headline           || 'Выплата')
+          .withLongHeadline(task.long_headline  || 'Получи выплату')
+          .withDescription(task.description     || 'Получи выплату пенсионер')
+          .withFinalUrl(task.final_url          || 'https://narivexoria.org/')
+          .withSquareMarketingImage(task.img_square || 'https://media.mssg.me/w/6981e70a610fc484959b1bd1/websites/698dc8e2f2cd285a7466aaa1/sq3_1774767304470.jpeg')
+          .withMarketingImage(task.img_rect         || 'https://media.mssg.me/w/6981e70a610fc484959b1bd1/websites/698dc8e2f2cd285a7466aaa1/w3_1774767696688.jpeg')
+          .build();
+
+        Logger.log('[CREATE_AD] Создано в группе: ' + adGroup.getName());
+
+        patchSupabase_(CONFIG.TABLE_ADS, { needs_create: false }, 'id=eq.' + task.id, CONFIG);
+
+      } catch(e) {
+        Logger.log('[CREATE_AD] Ошибка: ' + e);
+      }
+    });
+  }
 
   /* ====================== PLACEMENT ====================== */
 
