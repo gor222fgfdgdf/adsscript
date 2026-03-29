@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.5 - boostCampaignBudgets)
+ * Google Ads Master Script (v15.6 - boostCampaignBudgets + TG logs)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -35,7 +35,10 @@ function runMain(ACCOUNT_CONFIG) {
   try { checkSafetyLimitsStrict_(acc, CONFIG); }  catch (e) { Logger.log('[ERR][SAFETY] ' + e); }
   try { syncBidsFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][BIDS] ' + e); }
   try { syncAdEditsFromRegistry_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][AD_EDITS] ' + e); }
-  try { boostCampaignBudgets_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][BOOST_BUDGET] ' + e); }
+  try { boostCampaignBudgets_(myId, CONFIG); }     catch (e) {
+    Logger.log('[ERR][BOOST_BUDGET] ' + e);
+    tgSend_('❌ <b>Boost Budget — ОШИБКА</b>\nАкк: <code>' + myId + '</code>\n' + e, CONFIG);
+  }
 
   updateAccountRegistry_(acc, CONFIG);
   syncAdsToRegistry_(myId, CONFIG);
@@ -61,9 +64,11 @@ function runMain(ACCOUNT_CONFIG) {
 
     if (!campaigns.hasNext()) {
       Logger.log('[BOOST_BUDGET] Нет активных кампаний');
+      tgSend_('⚠️ <b>Boost Budget</b>\nАкк: <code>' + myId + '</code>\nАктивных кампаний не найдено.', CONFIG);
       return;
     }
 
+    var lines   = [];
     var boosted = 0;
 
     while (campaigns.hasNext()) {
@@ -78,8 +83,24 @@ function runMain(ACCOUNT_CONFIG) {
         ' | было: ' + current +
         ' | стало: ' + newAmount);
 
+      lines.push('📌 <b>' + camp.getName() + '</b>\n' +
+        '   ' + current + ' → ' + newAmount);
+
       boosted++;
     }
+
+    var now     = new Date();
+    var timeStr = ('0' + now.getUTCHours()).slice(-2) + ':' +
+                  ('0' + now.getUTCMinutes()).slice(-2) + ' UTC';
+
+    var msg =
+      '✅ <b>Boost Budget</b>\n' +
+      'Акк: <code>' + myId + '</code>\n' +
+      'Время: ' + timeStr + '\n' +
+      'Кампаний обновлено: ' + boosted + '\n\n' +
+      lines.join('\n\n');
+
+    tgSend_(msg, CONFIG);
 
     Logger.log('[BOOST_BUDGET] Обновлено кампаний: ' + boosted);
   }
