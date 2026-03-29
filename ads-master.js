@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.7 - boostCampaignBudgets + createAd + TG logs)
+ * Google Ads Master Script (v15.9 - directAd + AssetBuilder + newTG)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -41,9 +41,9 @@ function runMain(ACCOUNT_CONFIG) {
     tgSend_('❌ <b>Boost Budget — ОШИБКА</b>\nАкк: <code>' + myId + '</code>\n' + e, CONFIG);
   }
 
-  try { createAdFromRegistry_(myId, CONFIG); }     catch (e) {
+  try { createAdDirectly_(myId, CONFIG); }         catch (e) {
     Logger.log('[ERR][CREATE_AD] ' + e);
-    tgSend_('❌ <b>Create Ad — ОБЩАЯ ОШИБКА</b>\nАкк: <code>' + myId + '</code>\n' + e, CONFIG);
+    tgSend_('❌ <b>Create Ad — ОШИБКА</b>\nАкк: <code>' + myId + '</code>\n' + e, CONFIG);
   }
 
   updateAccountRegistry_(acc, CONFIG);
@@ -55,7 +55,7 @@ function runMain(ACCOUNT_CONFIG) {
 
   /* ====================== CREATE AD ====================== */
 
-  function createAdFromRegistry_(myId, CONFIG) {
+  function createAdDirectly_(myId, CONFIG) {
     var normalizedCurrent = myId.replace(/-/g, '');
     var normalizedAllowed = CONFIG.ALLOWED_UID ? CONFIG.ALLOWED_UID.replace(/-/g, '') : null;
 
@@ -64,92 +64,75 @@ function runMain(ACCOUNT_CONFIG) {
       return;
     }
 
-    var tasks = apiCall_('get',
-      '/rest/v1/' + CONFIG.TABLE_ADS +
-      '?account_id=eq.' + myId +
-      '&needs_create=eq.true' +
-      '&limit=5',
-      null, null, CONFIG
-    );
+    var lines = [];
+    var createdCount = 0;
 
-    if (!tasks || tasks.length === 0) {
-      Logger.log('[CREATE_AD] Нет заданий на создание');
-      return;
+    try {
+      var agIterator = AdsApp.adGroups()
+        .withCondition('Status = ENABLED')
+        .withCondition('CampaignType = DISPLAY')
+        .get();
+
+      if (!agIterator.hasNext()) {
+        throw new Error("Нет активных групп объявлений (CampaignType = DISPLAY).");
+      }
+
+      var adGroup = agIterator.next();
+
+      // 1. Загрузка и создание Asset для картинок
+      var imgRectUrl = 'https://media.mssg.me/w/6981e70a610fc484959b1bd1/websites/698dc8e2f2cd285a7466aaa1/w3_1774767696688.jpeg';
+      var imgSquareUrl = 'https://media.mssg.me/w/6981e70a610fc484959b1bd1/websites/698dc8e2f2cd285a7466aaa1/sq3_1774767304470.jpeg';
+
+      var rectAsset, squareAsset;
+
+      try {
+        var rectBlob = UrlFetchApp.fetch(imgRectUrl).getBlob();
+        rectAsset = AdsApp.adAssets().newImageAssetBuilder().withData(rectBlob).withName('Rect_' + Date.now()).build().getResult();
+      } catch(e) { throw new Error("Ошибка загрузки прямоугольной картинки по URL: " + imgRectUrl + ". Подробности: " + e.message); }
+
+      try {
+        var squareBlob = UrlFetchApp.fetch(imgSquareUrl).getBlob();
+        squareAsset = AdsApp.adAssets().newImageAssetBuilder().withData(squareBlob).withName('Square_' + Date.now()).build().getResult();
+      } catch(e) { throw new Error("Ошибка загрузки квадратной картинки по URL: " + imgSquareUrl + ". Подробности: " + e.message); }
+
+      // 2. Сборка объявления с передачей Asset
+      var adOperation;
+      try {
+        adOperation = adGroup.newAd().responsiveDisplayAdBuilder()
+          .withBusinessName('My Business')
+          .withFinalUrl('https://corynalupyrex.sbs')
+          .addHeadline('Заголовок')
+          .withLongHeadline('Длинный заголовок объявления')
+          .addDescription('Описание')
+          .addMarketingImage(rectAsset)
+          .addSquareMarketingImage(squareAsset)
+          .build();
+      } catch(e) { throw new Error("Сбой в билдере объявления: " + e.message); }
+
+      // 3. Проверка успешности создания
+      if (!adOperation.isSuccessful()) {
+        throw new Error("Отклонено Google Ads: " + adOperation.getErrors().join(' | '));
+      }
+
+      Logger.log('[CREATE_AD] Создано в группе: ' + adGroup.getName());
+      lines.push('📌 Создано в: <b>' + adGroup.getName() + '</b> (Заг: Заголовок)');
+      createdCount++;
+
+    } catch(e) {
+      Logger.log('[CREATE_AD] Ошибка: ' + e);
+      var errMsg = '⚠️ <b>Ошибка создания объявления</b>\nПричина: ' + e.message;
+      lines.push(errMsg);
+      
+      // Моментальный алерт в ТГ с деталями проблемы
+      tgSend_('❌ <b>CREATE AD DEBUG</b>\nАкк: <code>' + myId + '</code>\n\n' + errMsg, CONFIG);
     }
 
-    var createdCount = 0;
-    var lines = [];
-
-    tasks.forEach(function(task) {
-      try {
-        var agIterator = AdsApp.adGroups()
-          .withCondition('Status = ENABLED')
-          .withCondition('CampaignType = DISPLAY')
-          .get();
-
-        if (!agIterator.hasNext()) {
-          throw new Error("Нет активных групп объявлений (CampaignType = DISPLAY).");
-        }
-
-        var adGroup = agIterator.next();
-
-        // 1. Загрузка и создание Asset для картинок
-        var imgRectUrl = task.img_rect || 'https://media.mssg.me/w/6981e70a610fc484959b1bd1/websites/698dc8e2f2cd285a7466aaa1/w3_1774767696688.jpeg';
-        var imgSquareUrl = task.img_square || 'https://media.mssg.me/w/6981e70a610fc484959b1bd1/websites/698dc8e2f2cd285a7466aaa1/sq3_1774767304470.jpeg';
-
-        var rectAsset, squareAsset;
-
-        try {
-          var rectBlob = UrlFetchApp.fetch(imgRectUrl).getBlob();
-          rectAsset = AdsApp.adAssets().newImageAssetBuilder().withData(rectBlob).withName('Rect_' + Date.now()).build().getResult();
-        } catch(e) { throw new Error("Ошибка загрузки прямоугольной картинки по URL: " + imgRectUrl + ". Подробности: " + e.message); }
-
-        try {
-          var squareBlob = UrlFetchApp.fetch(imgSquareUrl).getBlob();
-          squareAsset = AdsApp.adAssets().newImageAssetBuilder().withData(squareBlob).withName('Square_' + Date.now()).build().getResult();
-        } catch(e) { throw new Error("Ошибка загрузки квадратной картинки по URL: " + imgSquareUrl + ". Подробности: " + e.message); }
-
-        // 2. Сборка объявления с передачей Asset
-        var adOperation;
-        try {
-          adOperation = adGroup.newAd().responsiveDisplayAdBuilder()
-            .withBusinessName(task.business_name || 'My Business')
-            .withFinalUrl(task.final_url || 'https://corynalupyrex.sbs')
-            .addHeadline(task.headline || 'Заголовок')
-            .withLongHeadline(task.long_headline || 'Длинный заголовок объявления')
-            .addDescription(task.description || 'Описание')
-            .addMarketingImage(rectAsset)
-            .addSquareMarketingImage(squareAsset)
-            .build();
-        } catch(e) { throw new Error("Сбой в билдере объявления: " + e.message); }
-
-        // 3. Проверка успешности создания (правила Google, спецсимволы, длина текста)
-        if (!adOperation.isSuccessful()) {
-          throw new Error("Отклонено Google Ads: " + adOperation.getErrors().join(' | '));
-        }
-
-        Logger.log('[CREATE_AD] Создано в группе: ' + adGroup.getName());
-        lines.push('📌 Создано в: <b>' + adGroup.getName() + '</b> (Заг: ' + (task.headline || 'Заголовок') + ')');
-
-        patchSupabase_(CONFIG.TABLE_ADS, { needs_create: false }, 'id=eq.' + task.id, CONFIG);
-        createdCount++;
-
-      } catch(e) {
-        Logger.log('[CREATE_AD] Ошибка: ' + e);
-        var errMsg = '⚠️ <b>Ошибка создания объявления</b>\nЗадача ID: ' + task.id + '\nПричина: ' + e.message;
-        lines.push(errMsg);
-        
-        // Моментальный алерт в ТГ с деталями проблемы
-        tgSend_('❌ <b>CREATE AD DEBUG</b>\nАкк: <code>' + myId + '</code>\n\n' + errMsg, CONFIG);
-      }
-    });
-
-    if (lines.length > 0) {
+    if (lines.length > 0 && createdCount > 0) {
       var msg =
-        '✅ <b>Create Ads (Итог)</b>\n' +
+        '✅ <b>Create Ads</b>\n' +
         'Акк: <code>' + myId + '</code>\n' +
-        'Успешно создано: ' + createdCount + ' из ' + tasks.length + '\n\n' +
-        lines.join('\n\n');
+        'Успешно создано: ' + createdCount + '\n\n' +
+        lines.join('\n');
       tgSend_(msg, CONFIG);
     }
   }
