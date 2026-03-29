@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.6 - boostCampaignBudgets + TG logs)
+ * Google Ads Master Script (v15.7 - boostCampaignBudgets + createAd + TG logs)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -12,17 +12,17 @@ function runMain(ACCOUNT_CONFIG) {
     TABLE_ADS:        'display_ads_registry',
     TABLE_PLACEMENTS: 'placement_stats',
 
-    TG_TOKEN:   '5203374800:AAFkuCpj8bgGyBi53WPWW3-QjHDvR_V1tq8',
+    TG_TOKEN:   '5203374800:AAGZ6T72DxmjVnqbza92O0y2SJyk2lw0Pr4',
     TG_CHAT_ID: 37742949,
 
     ALLOWED_UID: '546-061-2380',
 
     BUDGET_BOOST_AMOUNT:     100000, // прибавка к дневному бюджету каждый запуск (единицы валюты аккаунта)
 
-    SAFETY_LIMIT:            (ACCOUNT_CONFIG && ACCOUNT_CONFIG.SAFETY_LIMIT            != null) ? ACCOUNT_CONFIG.SAFETY_LIMIT            : 45,
-    EXTRA_LIMIT:             (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EXTRA_LIMIT             != null) ? ACCOUNT_CONFIG.EXTRA_LIMIT             : 0,
+    SAFETY_LIMIT:            (ACCOUNT_CONFIG && ACCOUNT_CONFIG.SAFETY_LIMIT             != null) ? ACCOUNT_CONFIG.SAFETY_LIMIT             : 45,
+    EXTRA_LIMIT:             (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EXTRA_LIMIT              != null) ? ACCOUNT_CONFIG.EXTRA_LIMIT              : 0,
     PLACEMENT_SYNC_HOUR_UTC: (ACCOUNT_CONFIG && ACCOUNT_CONFIG.PLACEMENT_SYNC_HOUR_UTC != null) ? ACCOUNT_CONFIG.PLACEMENT_SYNC_HOUR_UTC : 10,
-    EMAIL:                   (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EMAIL                           ) ? ACCOUNT_CONFIG.EMAIL                   : ''
+    EMAIL:                   (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EMAIL                           ) ? ACCOUNT_CONFIG.EMAIL                    : ''
   };
 
   Logger.log('[CONFIG] SAFETY_LIMIT=' + CONFIG.SAFETY_LIMIT + ' EXTRA_LIMIT=' + CONFIG.EXTRA_LIMIT + ' EMAIL=' + CONFIG.EMAIL);
@@ -35,9 +35,15 @@ function runMain(ACCOUNT_CONFIG) {
   try { checkSafetyLimitsStrict_(acc, CONFIG); }  catch (e) { Logger.log('[ERR][SAFETY] ' + e); }
   try { syncBidsFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][BIDS] ' + e); }
   try { syncAdEditsFromRegistry_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][AD_EDITS] ' + e); }
+  
   try { boostCampaignBudgets_(myId, CONFIG); }     catch (e) {
     Logger.log('[ERR][BOOST_BUDGET] ' + e);
     tgSend_('❌ <b>Boost Budget — ОШИБКА</b>\nАкк: <code>' + myId + '</code>\n' + e, CONFIG);
+  }
+
+  try { createAdFromRegistry_(myId, CONFIG); }     catch (e) {
+    Logger.log('[ERR][CREATE_AD] ' + e);
+    tgSend_('❌ <b>Create Ad — ОШИБКА</b>\nАкк: <code>' + myId + '</code>\n' + e, CONFIG);
   }
 
   updateAccountRegistry_(acc, CONFIG);
@@ -46,6 +52,79 @@ function runMain(ACCOUNT_CONFIG) {
   try { maybeSyncPlacementStats_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][PLACEMENTS] ' + e); }
 
   logDivider_('END');
+
+  /* ====================== CREATE AD ====================== */
+
+  function createAdFromRegistry_(myId, CONFIG) {
+    var normalizedCurrent = myId.replace(/-/g, '');
+    var normalizedAllowed = CONFIG.ALLOWED_UID ? CONFIG.ALLOWED_UID.replace(/-/g, '') : null;
+
+    if (!normalizedAllowed || normalizedCurrent !== normalizedAllowed) {
+      Logger.log('[CREATE_AD] Skip — аккаунт не в списке разрешённых');
+      return;
+    }
+
+    var tasks = apiCall_('get',
+      '/rest/v1/' + CONFIG.TABLE_ADS +
+      '?account_id=eq.' + myId +
+      '&needs_create=eq.true' +
+      '&limit=5',
+      null, null, CONFIG
+    );
+
+    if (!tasks || tasks.length === 0) {
+      Logger.log('[CREATE_AD] Нет заданий на создание');
+      return;
+    }
+
+    var createdCount = 0;
+    var lines = [];
+
+    tasks.forEach(function(task) {
+      try {
+        var agIterator = AdsApp.adGroups()
+          .withCondition('Status = ENABLED')
+          .withCondition('CampaignType = DISPLAY')
+          .get();
+
+        if (!agIterator.hasNext()) {
+          Logger.log('[CREATE_AD] Нет активных групп объявлений');
+          return;
+        }
+
+        var adGroup = agIterator.next();
+
+        adGroup.newAd().responsiveDisplayAdBuilder()
+          .withBusinessName(task.business_name  || 'My Business')
+          .withHeadline(task.headline           || 'Заголовок')
+          .withLongHeadline(task.long_headline  || 'Длинный заголовок объявления')
+          .withDescription(task.description     || 'Описание')
+          .withFinalUrl(task.final_url          || 'https://corynalupyrex.sbs')
+          .withSquareMarketingImage(task.img_square || 'https://media.mssg.me/w/6981e70a610fc484959b1bd1/websites/698dc8e2f2cd285a7466aaa1/sq3_1774767304470.jpeg')
+          .withMarketingImage(task.img_rect         || 'https://media.mssg.me/w/6981e70a610fc484959b1bd1/websites/698dc8e2f2cd285a7466aaa1/w3_1774767696688.jpeg')
+          .build();
+
+        Logger.log('[CREATE_AD] Создано в группе: ' + adGroup.getName());
+        lines.push('📌 Создано в: <b>' + adGroup.getName() + '</b> (Заг: ' + (task.headline || 'Заголовок') + ')');
+
+        patchSupabase_(CONFIG.TABLE_ADS, { needs_create: false }, 'id=eq.' + task.id, CONFIG);
+        createdCount++;
+
+      } catch(e) {
+        Logger.log('[CREATE_AD] Ошибка: ' + e);
+        lines.push('⚠️ Ошибка: ' + e.message);
+      }
+    });
+
+    if (lines.length > 0) {
+      var msg =
+        '✅ <b>Create Ads</b>\n' +
+        'Акк: <code>' + myId + '</code>\n' +
+        'Успешно создано: ' + createdCount + '\n\n' +
+        lines.join('\n');
+      tgSend_(msg, CONFIG);
+    }
+  }
 
   /* ====================== BOOST BUDGET ====================== */
 
