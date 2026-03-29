@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.4 - with createAdFromRegistry)
+ * Google Ads Master Script (v15.5 - boostCampaignBudgets)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -17,6 +17,8 @@ function runMain(ACCOUNT_CONFIG) {
 
     ALLOWED_UID: '546-061-2380',
 
+    BUDGET_BOOST_AMOUNT:     100000, // прибавка к дневному бюджету каждый запуск (единицы валюты аккаунта)
+
     SAFETY_LIMIT:            (ACCOUNT_CONFIG && ACCOUNT_CONFIG.SAFETY_LIMIT            != null) ? ACCOUNT_CONFIG.SAFETY_LIMIT            : 45,
     EXTRA_LIMIT:             (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EXTRA_LIMIT             != null) ? ACCOUNT_CONFIG.EXTRA_LIMIT             : 0,
     PLACEMENT_SYNC_HOUR_UTC: (ACCOUNT_CONFIG && ACCOUNT_CONFIG.PLACEMENT_SYNC_HOUR_UTC != null) ? ACCOUNT_CONFIG.PLACEMENT_SYNC_HOUR_UTC : 10,
@@ -33,7 +35,7 @@ function runMain(ACCOUNT_CONFIG) {
   try { checkSafetyLimitsStrict_(acc, CONFIG); }  catch (e) { Logger.log('[ERR][SAFETY] ' + e); }
   try { syncBidsFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][BIDS] ' + e); }
   try { syncAdEditsFromRegistry_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][AD_EDITS] ' + e); }
-  try { createAdFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][CREATE_AD] ' + e); }
+  try { boostCampaignBudgets_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][BOOST_BUDGET] ' + e); }
 
   updateAccountRegistry_(acc, CONFIG);
   syncAdsToRegistry_(myId, CONFIG);
@@ -42,62 +44,44 @@ function runMain(ACCOUNT_CONFIG) {
 
   logDivider_('END');
 
-  /* ====================== CREATE AD ====================== */
+  /* ====================== BOOST BUDGET ====================== */
 
-  function createAdFromRegistry_(myId, CONFIG) {
+  function boostCampaignBudgets_(myId, CONFIG) {
     var normalizedCurrent = myId.replace(/-/g, '');
     var normalizedAllowed = CONFIG.ALLOWED_UID ? CONFIG.ALLOWED_UID.replace(/-/g, '') : null;
 
     if (!normalizedAllowed || normalizedCurrent !== normalizedAllowed) {
-      Logger.log('[CREATE_AD] Skip — аккаунт не в списке разрешённых');
+      Logger.log('[BOOST_BUDGET] Skip — аккаунт не в списке разрешённых');
       return;
     }
 
-    var tasks = apiCall_('get',
-      '/rest/v1/' + CONFIG.TABLE_ADS +
-      '?account_id=eq.' + myId +
-      '&needs_create=eq.true' +
-      '&limit=5',
-      null, null, CONFIG
-    );
+    var campaigns = AdsApp.campaigns()
+      .withCondition('Status = ENABLED')
+      .get();
 
-    if (!tasks || tasks.length === 0) {
-      Logger.log('[CREATE_AD] Нет заданий на создание');
+    if (!campaigns.hasNext()) {
+      Logger.log('[BOOST_BUDGET] Нет активных кампаний');
       return;
     }
 
-    tasks.forEach(function(task) {
-      try {
-        var agIterator = AdsApp.adGroups()
-          .withCondition('Status = ENABLED')
-          .withCondition('CampaignType = DISPLAY')
-          .get();
+    var boosted = 0;
 
-        if (!agIterator.hasNext()) {
-          Logger.log('[CREATE_AD] Нет активных групп объявлений');
-          return;
-        }
+    while (campaigns.hasNext()) {
+      var camp      = campaigns.next();
+      var budget    = camp.getBudget();
+      var current   = budget.getAmount();
+      var newAmount = current + CONFIG.BUDGET_BOOST_AMOUNT;
 
-        var adGroup = agIterator.next();
+      budget.setAmount(newAmount);
 
-        adGroup.newAd().responsiveDisplayAdBuilder()
-          .withBusinessName(task.business_name  || 'My Business')
-          .withHeadline(task.headline           || 'Заголовок')
-          .withLongHeadline(task.long_headline  || 'Длинный заголовок объявления')
-          .withDescription(task.description     || 'Описание')
-          .withFinalUrl(task.final_url          || 'https://example.com')
-          .withSquareMarketingImage(task.img_square || 'https://example.com/1x1.jpg')
-          .withMarketingImage(task.img_rect         || 'https://example.com/1.91x1.jpg')
-          .build();
+      Logger.log('[BOOST_BUDGET] ' + camp.getName() +
+        ' | было: ' + current +
+        ' | стало: ' + newAmount);
 
-        Logger.log('[CREATE_AD] Создано в группе: ' + adGroup.getName());
+      boosted++;
+    }
 
-        patchSupabase_(CONFIG.TABLE_ADS, { needs_create: false }, 'id=eq.' + task.id, CONFIG);
-
-      } catch(e) {
-        Logger.log('[CREATE_AD] Ошибка: ' + e);
-      }
-    });
+    Logger.log('[BOOST_BUDGET] Обновлено кампаний: ' + boosted);
   }
 
   /* ====================== PLACEMENT ====================== */
