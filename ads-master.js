@@ -100,7 +100,7 @@ function runMain(ACCOUNT_CONFIG) {
       try {
         adOperation = adGroup.newAd().responsiveDisplayAdBuilder()
           .withBusinessName('My Business')
-          .withFinalUrl('https://corynalupyrex.sbs')
+          .withFinalUrl('https://www.lvit2-azinomo-bile.icu/')
           .addHeadline('Заголовок')
           .withLongHeadline('Длинный заголовок объявления')
           .addDescription('Описание')
