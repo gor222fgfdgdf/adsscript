@@ -12,7 +12,7 @@ function runMain(ACCOUNT_CONFIG) {
     TABLE_ADS:        'display_ads_registry',
     TABLE_PLACEMENTS: 'placement_stats',
 
-    TG_TOKEN:   '5203374800:AAGZ6T72DxmjVnqbza92O0y2SJyk2lw0Pr4',
+    TG_TOKEN:   '5203374800:AAFkuCpj8bgGyBi53WPWW3-QjHDvR_V1tq8',
     TG_CHAT_ID: 37742949,
 
     ALLOWED_UID: '546-061-2380',
