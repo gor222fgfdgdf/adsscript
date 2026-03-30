@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.15 - Fix ResponsiveDisplayAdBuilder methods)
+ * Google Ads Master Script (v15.16 - Final ResponsiveDisplayAdBuilder Fix)
  */
 
 function runMain(ACCOUNT_CONFIG) {
