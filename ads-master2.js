@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.11 - Offline Conversions via Edge Function)
+ * Google Ads Master Script (v15.12 - Full Debug)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -15,7 +15,7 @@ function runMain(ACCOUNT_CONFIG) {
     TG_TOKEN:   '5203374800:AAGZ6T72DxmjVnqbza92O0y2SJyk2lw0Pr4',
     TG_CHAT_ID: 37742949,
 
-    CONVERSION_NAME: 'offline (Upload)', // Замените на точное название конверсии из аккаунта
+    CONVERSION_NAME: 'Offline_Sale',
 
     SAFETY_LIMIT:            (ACCOUNT_CONFIG && ACCOUNT_CONFIG.SAFETY_LIMIT             != null) ? ACCOUNT_CONFIG.SAFETY_LIMIT             : 45,
     EXTRA_LIMIT:             (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EXTRA_LIMIT              != null) ? ACCOUNT_CONFIG.EXTRA_LIMIT              : 0,
@@ -23,7 +23,7 @@ function runMain(ACCOUNT_CONFIG) {
     EMAIL:                   (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EMAIL                           ) ? ACCOUNT_CONFIG.EMAIL                    : ''
   };
 
-  Logger.log('[CONFIG] SAFETY_LIMIT=' + CONFIG.SAFETY_LIMIT + ' EXTRA_LIMIT=' + CONFIG.EXTRA_LIMIT + ' EMAIL=' + CONFIG.EMAIL);
+  Logger.log('[CONFIG] SAFETY_LIMIT=' + CONFIG.SAFETY_LIMIT + ' EXTRA_LIMIT=' + CONFIG.EXTRA_LIMIT);
 
   var acc  = AdsApp.currentAccount();
   var myId = acc.getCustomerId();
@@ -41,7 +41,6 @@ function runMain(ACCOUNT_CONFIG) {
 
   try { uploadConversionsFromEdge_(myId, CONFIG); } catch (e) {
     Logger.log('[ERR][CONVERSIONS] ' + e);
-    tgSend_('❌ <b>Офлайн Конверсии — ОШИБКА</b>\nАкк: <code>' + myId + '</code>\n' + e, CONFIG);
   }
 
   updateAccountRegistry_(acc, CONFIG);
@@ -54,10 +53,7 @@ function runMain(ACCOUNT_CONFIG) {
   /* ====================== OFFLINE CONVERSIONS ====================== */
 
   function uploadConversionsFromEdge_(myId, CONFIG) {
-    if (!CONFIG.CONVERSION_NAME) {
-      Logger.log('[CONVERSIONS] Имя конверсии не задано (CONFIG.CONVERSION_NAME)');
-      return;
-    }
+    if (!CONFIG.CONVERSION_NAME) return;
 
     var url = CONFIG.SUPABASE_URL + '/functions/v1/fetch-postbacks';
     var headers = {
@@ -65,33 +61,16 @@ function runMain(ACCOUNT_CONFIG) {
       'Content-Type':  'application/json'
     };
 
-    // Шаг 1: Получение конверсий
-    var getRes = UrlFetchApp.fetch(url, {
-      method: 'get',
-      headers: headers,
-      muteHttpExceptions: true
-    });
-
-    if (getRes.getResponseCode() !== 200) {
-      Logger.log('[CONVERSIONS] Ошибка GET: ' + getRes.getContentText());
-      return;
-    }
+    var getRes = UrlFetchApp.fetch(url, { method: 'get', headers: headers, muteHttpExceptions: true });
+    if (getRes.getResponseCode() !== 200) return;
 
     var data = JSON.parse(getRes.getContentText());
-    
     if (!data.conversions || data.count === 0 || data.conversions.length === 0) {
       Logger.log('[CONVERSIONS] Нет конверсий для загрузки');
       return;
     }
 
-    var columns = [
-      'Google Click ID',
-      'Conversion Name',
-      'Conversion Time',
-      'Conversion Value',
-      'Conversion Currency'
-    ];
-
+    var columns = ['Google Click ID', 'Conversion Name', 'Conversion Time', 'Conversion Value', 'Conversion Currency'];
     var upload = AdsApp.bulkUploads().newCsvUpload(columns);
     upload.forOfflineConversions();
 
@@ -99,14 +78,11 @@ function runMain(ACCOUNT_CONFIG) {
     var normalizedMyId = myId.replace(/-/g, '');
 
     data.conversions.forEach(function(c) {
-      // Загружаем только те, что относятся к текущему аккаунту
       var cUid = (c.account_uid || '').replace(/-/g, '');
       if (cUid !== normalizedMyId) return;
       if (!c.gclid) return;
 
-      // Приведение к формату Google Ads (добавляем часовой пояс GMT+1)
       var formattedTime = c.external_timestamp.replace('T', ' ') + '+0100';
-
       upload.append({
         'Google Click ID': c.gclid,
         'Conversion Name': CONFIG.CONVERSION_NAME,
@@ -114,47 +90,30 @@ function runMain(ACCOUNT_CONFIG) {
         'Conversion Value': c.payout || 0,
         'Conversion Currency': c.currency || 'USD'
       });
-
       uploadedIds.push(c.id);
     });
 
-    // Шаг 2: Отправка в Google Ads и подтверждение в БД
     if (uploadedIds.length > 0) {
       upload.apply();
-      Logger.log('[CONVERSIONS] Отправлено в Google Ads: ' + uploadedIds.length);
-
-      var postRes = UrlFetchApp.fetch(url, {
-        method: 'post',
-        headers: headers,
-        payload: JSON.stringify({ ids: uploadedIds }),
-        muteHttpExceptions: true
-      });
-
-      if (postRes.getResponseCode() === 200 || postRes.getResponseCode() === 201) {
-        Logger.log('[CONVERSIONS] Успешно подтверждено в БД');
-      } else {
-        Logger.log('[CONVERSIONS] Ошибка подтверждения в БД: ' + postRes.getContentText());
-      }
-
-      tgSend_('✅ <b>Заливка конверсий</b>\nАкк: <code>' + myId + '</code>\nУспешно отправлено: ' + uploadedIds.length, CONFIG);
-    } else {
-      Logger.log('[CONVERSIONS] Конверсии для текущего аккаунта не найдены в ответе БД');
+      Logger.log('[CONVERSIONS] Отправлено: ' + uploadedIds.length);
+      UrlFetchApp.fetch(url, { method: 'post', headers: headers, payload: JSON.stringify({ ids: uploadedIds }), muteHttpExceptions: true });
     }
   }
 
   /* ====================== CREATE AD ====================== */
 
   function createAdFromRegistry_(myId, CONFIG) {
-    var tasks = apiCall_('get',
-      '/rest/v1/' + CONFIG.TABLE_ADS +
-      '?account_id=eq.' + myId +
-      '&needs_create=eq.true' +
-      '&limit=5',
-      null, null, CONFIG
-    );
+    Logger.log('[CREATE_AD] Аккаунт Google Ads: ' + myId);
+    
+    var endpoint = '/rest/v1/' + CONFIG.TABLE_ADS + '?account_id=eq.' + myId + '&needs_create=eq.true&limit=5';
+    Logger.log('[CREATE_AD] URL запроса: ' + endpoint);
+
+    var tasks = apiCall_('get', endpoint, null, null, CONFIG);
+    Logger.log('[CREATE_AD] Сырой ответ БД: ' + (tasks ? JSON.stringify(tasks) : 'null'));
 
     if (!tasks || tasks.length === 0) {
-      Logger.log('[CREATE_AD] Нет заданий на создание');
+      Logger.log('[CREATE_AD] Нет заданий на создание.');
+      Logger.log('[CREATE_AD] Чеклист ошибки: 1. Совпадает ли account_id в базе с ' + myId + '? 2. Является ли needs_create типом boolean?');
       return;
     }
 
@@ -162,6 +121,7 @@ function runMain(ACCOUNT_CONFIG) {
     var lines = [];
 
     tasks.forEach(function(task) {
+      Logger.log('[CREATE_AD] Обработка задания ID: ' + task.id);
       try {
         var agIterator = AdsApp.adGroups()
           .withCondition('Status = ENABLED')
@@ -169,11 +129,18 @@ function runMain(ACCOUNT_CONFIG) {
           .get();
 
         if (!agIterator.hasNext()) {
-          Logger.log('[CREATE_AD] Нет активных групп объявлений');
+          Logger.log('[CREATE_AD] В аккаунте нет активных групп объявлений КМС');
           return;
         }
 
         var adGroup = agIterator.next();
+        Logger.log('[CREATE_AD] Целевая группа: ' + adGroup.getName());
+
+        var sqImg = task.square_image_url || task.img_square || 'https://example.com/1x1.jpg';
+        var rImg = task.rectangle_image_url || task.img_rect || 'https://example.com/1.91x1.jpg';
+
+        Logger.log('[CREATE_AD] URL Квадрат: ' + sqImg);
+        Logger.log('[CREATE_AD] URL Прямоугольник: ' + rImg);
 
         adGroup.newAd().responsiveDisplayAdBuilder()
           .withBusinessName(task.business_name  || 'My Business')
@@ -181,29 +148,24 @@ function runMain(ACCOUNT_CONFIG) {
           .withLongHeadline(task.long_headline  || 'Длинный заголовок объявления')
           .withDescription(task.description     || 'Описание')
           .withFinalUrl(task.final_url          || 'https://example.com')
-          .withSquareMarketingImage(task.img_square || 'https://example.com/1x1.jpg')
-          .withMarketingImage(task.img_rect         || 'https://example.com/1.91x1.jpg')
+          .withSquareMarketingImage(sqImg)
+          .withMarketingImage(rImg)
           .build();
 
-        Logger.log('[CREATE_AD] Создано в группе: ' + adGroup.getName());
+        Logger.log('[CREATE_AD] Отправлена команда на создание');
         lines.push('📌 Создано в: <b>' + adGroup.getName() + '</b> (Заг: ' + (task.headline || 'Заголовок') + ')');
 
         patchSupabase_(CONFIG.TABLE_ADS, { needs_create: false }, 'id=eq.' + task.id, CONFIG);
         createdCount++;
 
       } catch(e) {
-        Logger.log('[CREATE_AD] Ошибка: ' + e);
+        Logger.log('[CREATE_AD] Ошибка в цикле: ' + e);
         lines.push('⚠️ Ошибка: ' + e.message);
       }
     });
 
     if (lines.length > 0) {
-      var msg =
-        '✅ <b>Create Ads</b>\n' +
-        'Акк: <code>' + myId + '</code>\n' +
-        'Успешно создано: ' + createdCount + '\n\n' +
-        lines.join('\n');
-      tgSend_(msg, CONFIG);
+      tgSend_('✅ <b>Create Ads</b>\nАкк: <code>' + myId + '</code>\nУспешно создано: ' + createdCount + '\n\n' + lines.join('\n'), CONFIG);
     }
   }
 
@@ -213,125 +175,60 @@ function runMain(ACCOUNT_CONFIG) {
     var currentHourUTC = new Date().getUTCHours();
     var yesterday      = getYesterdayDate_();
 
-    if (currentHourUTC !== CONFIG.PLACEMENT_SYNC_HOUR_UTC) {
-      Logger.log('[PLACEMENTS] Skip — not sync hour (now=' + currentHourUTC + ' UTC, expected=' + CONFIG.PLACEMENT_SYNC_HOUR_UTC + ')');
-      return;
-    }
+    if (currentHourUTC !== CONFIG.PLACEMENT_SYNC_HOUR_UTC) { return; }
 
-    var check = apiCall_('get',
-      '/rest/v1/' + CONFIG.TABLE_PLACEMENTS +
-      '?account_id=eq.' + myId +
-      '&date=eq.'       + yesterday +
-      '&limit=1',
-      null, null, CONFIG
-    );
-
-    if (check && check.length > 0) {
-      Logger.log('[PLACEMENTS] Skip — already synced for ' + yesterday);
-      return;
-    }
+    var check = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_PLACEMENTS + '?account_id=eq.' + myId + '&date=eq.' + yesterday + '&limit=1', null, null, CONFIG);
+    if (check && check.length > 0) { return; }
 
     syncPlacementStats_(myId, CONFIG);
   }
 
   function syncPlacementStats_(myId, CONFIG) {
     var yesterday = getYesterdayDate_();
-    Logger.log('[PLACEMENTS] Fetching for: ' + yesterday);
-
-    var gaql =
-      'SELECT ' +
-      '  detail_placement_view.display_name, ' +
-      '  detail_placement_view.placement, ' +
-      '  detail_placement_view.placement_type, ' +
-      '  campaign.name, ' +
-      '  ad_group.name, ' +
-      '  metrics.impressions, ' +
-      '  metrics.clicks, ' +
-      '  metrics.cost_micros, ' +
-      '  metrics.conversions ' +
-      'FROM detail_placement_view ' +
-      'WHERE segments.date = \'' + yesterday + '\' ' +
-      'AND metrics.impressions > 0';
+    var gaql = 'SELECT detail_placement_view.display_name, detail_placement_view.placement, detail_placement_view.placement_type, campaign.name, ad_group.name, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions FROM detail_placement_view WHERE segments.date = \'' + yesterday + '\' AND metrics.impressions > 0';
 
     var rows  = AdsApp.search(gaql);
     var batch = [];
     var total = 0;
 
     while (rows.hasNext()) {
-      var row           = rows.next();
-      var dpv           = row.detailPlacementView || {};
-      var placement     = dpv.placement      || '';
-      var displayName   = dpv.displayName    || placement;
-      var placementType = dpv.placementType  || '';
-      var campaignName  = (row.campaign && row.campaign.name) || '';
-      var adGroupName   = (row.adGroup  && row.adGroup.name)  || '';
-      var impressions   = parseInt((row.metrics && row.metrics.impressions) || 0, 10);
-      var clicks        = parseInt((row.metrics && row.metrics.clicks)      || 0, 10);
-      var costMicros    = parseInt((row.metrics && row.metrics.costMicros)  || 0, 10);
-      var conversions   = parseFloat((row.metrics && row.metrics.conversions) || 0);
-
+      var row = rows.next();
       batch.push({
         account_id:     myId,
-        placement:      placement,
-        display_name:   displayName,
-        placement_type: placementType,
-        campaign_name:  campaignName,
-        ad_group_name:  adGroupName,
+        placement:      (row.detailPlacementView || {}).placement || '',
+        display_name:   (row.detailPlacementView || {}).displayName || ((row.detailPlacementView || {}).placement || ''),
+        placement_type: (row.detailPlacementView || {}).placementType || '',
+        campaign_name:  (row.campaign && row.campaign.name) || '',
+        ad_group_name:  (row.adGroup  && row.adGroup.name)  || '',
         date:           yesterday,
-        impressions:    impressions,
-        clicks:         clicks,
-        cost:           costMicros / 1000000,
-        conversions:    conversions,
+        impressions:    parseInt((row.metrics && row.metrics.impressions) || 0, 10),
+        clicks:         parseInt((row.metrics && row.metrics.clicks)      || 0, 10),
+        cost:           parseInt((row.metrics && row.metrics.costMicros)  || 0, 10) / 1000000,
+        conversions:    parseFloat((row.metrics && row.metrics.conversions) || 0),
         updated_at:     new Date().toISOString()
       });
-
       total++;
-
-      if (batch.length >= 50) {
-        apiCall_('post', '/rest/v1/' + CONFIG.TABLE_PLACEMENTS, batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
-        batch = [];
-        Logger.log('[PLACEMENTS] Batch sent: 50 rows');
-      }
+      if (batch.length >= 50) { apiCall_('post', '/rest/v1/' + CONFIG.TABLE_PLACEMENTS, batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG); batch = []; }
     }
-
-    if (batch.length > 0) {
-      apiCall_('post', '/rest/v1/' + CONFIG.TABLE_PLACEMENTS, batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
-      Logger.log('[PLACEMENTS] Batch sent: ' + batch.length + ' rows');
-    }
-
-    Logger.log('[PLACEMENTS] Done. Total synced: ' + total);
+    if (batch.length > 0) { apiCall_('post', '/rest/v1/' + CONFIG.TABLE_PLACEMENTS, batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG); }
   }
 
   /* ====================== УПРАВЛЕНИЕ СТАТУСАМИ И URL ====================== */
 
   function syncAdEditsFromRegistry_(myId, CONFIG) {
-    var edits = apiCall_('get',
-      '/rest/v1/' + CONFIG.TABLE_ADS + '?account_id=eq.' + myId + '&needs_sync=eq.true',
-      null, null, CONFIG
-    );
-
+    var edits = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ADS + '?account_id=eq.' + myId + '&needs_sync=eq.true', null, null, CONFIG);
     if (!edits || edits.length === 0) return;
-    Logger.log('[SYNC] Правок найдено: ' + edits.length);
 
     edits.forEach(function(edit) {
       var adIterator = AdsApp.ads().withIds([edit.ad_id]).get();
       if (!adIterator.hasNext()) return;
-
       var ad = adIterator.next();
 
-      if (edit.target_status === 'ENABLED') { ad.enable(); Logger.log('[STATUS] Ad ' + edit.ad_id + ' -> ENABLED'); }
-      if (edit.target_status === 'PAUSED')  { ad.pause();  Logger.log('[STATUS] Ad ' + edit.ad_id + ' -> PAUSED'); }
+      if (edit.target_status === 'ENABLED') ad.enable();
+      if (edit.target_status === 'PAUSED')  ad.pause();
+      if (edit.edit_final_url) ad.urls().setFinalUrl(edit.edit_final_url);
 
-      if (edit.edit_final_url) {
-        ad.urls().setFinalUrl(edit.edit_final_url);
-        Logger.log('[URL] Ad ' + edit.ad_id + ' -> ' + edit.edit_final_url);
-      }
-
-      patchSupabase_(CONFIG.TABLE_ADS, {
-        needs_sync:     false,
-        edit_final_url: null,
-        target_status:  null
-      }, 'ad_id=eq.' + edit.ad_id, CONFIG);
+      patchSupabase_(CONFIG.TABLE_ADS, { needs_sync: false, edit_final_url: null, target_status: null }, 'ad_id=eq.' + edit.ad_id, CONFIG);
     });
   }
 
@@ -362,8 +259,7 @@ function runMain(ACCOUNT_CONFIG) {
   /* ====================== РЕЕСТРЫ ====================== */
 
   function updateAccountRegistry_(acc, CONFIG) {
-    var activeBid = 0;
-    var balance   = 0;
+    var activeBid = 0; var balance = 0;
     try {
       var ag = AdsApp.adGroups().withCondition('Status = ENABLED').withLimit(1).get();
       if (ag.hasNext()) activeBid = ag.next().bidding().getCpc();
@@ -372,39 +268,29 @@ function runMain(ACCOUNT_CONFIG) {
     } catch(e) {}
 
     apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS, {
-      uid:         acc.getCustomerId(),
-      name:        acc.getName(),
-      email:       CONFIG.EMAIL,
-      today_cost:  acc.getStatsFor('TODAY').getCost(),
-      all_cost:    acc.getStatsFor('ALL_TIME').getCost(),
-      current_cpc: activeBid,
-      balance:     balance,
-      updated_at:  new Date().toISOString()
+      uid: acc.getCustomerId(), name: acc.getName(), email: CONFIG.EMAIL,
+      today_cost: acc.getStatsFor('TODAY').getCost(), all_cost: acc.getStatsFor('ALL_TIME').getCost(),
+      current_cpc: activeBid, balance: balance, updated_at: new Date().toISOString()
     }, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
   }
 
   function syncAdsToRegistry_(myId, CONFIG) {
-    var ads = AdsApp.ads()
-      .withCondition('CampaignType = DISPLAY')
-      .withCondition('Status IN [ENABLED, PAUSED]')
-      .get();
-
+    var ads = AdsApp.ads().withCondition('CampaignType = DISPLAY').withCondition('Status IN [ENABLED, PAUSED]').get();
     var batch = [];
 
     while (ads.hasNext()) {
-      var ad           = ads.next();
-      var stats        = ad.getStatsFor('TODAY');
-      var adType       = ad.getType();
-      var headlines    = 'Display Ad';
+      var ad = ads.next();
+      var stats = ad.getStatsFor('TODAY');
+      var adType = ad.getType();
+      var headlines = 'Display Ad';
       var descriptions = '';
       var policyStatus = 'UNKNOWN';
 
       try { policyStatus = ad.getPolicyApprovalStatus(); } catch(e) {}
-
       try {
         if (adType === 'MULTI_ASSET_RESPONSIVE_DISPLAY_AD') {
-          var rda      = ad.asType().responsiveDisplayAd();
-          headlines    = rda.getHeadlines().map(function(h)    { return h.getText(); }).join(' | ');
+          var rda = ad.asType().responsiveDisplayAd();
+          headlines = rda.getHeadlines().map(function(h) { return h.getText(); }).join(' | ');
           descriptions = rda.getDescriptions().map(function(d) { return d.getText(); }).join(' | ');
         } else {
           headlines = (typeof ad.getName === 'function') ? ad.getName() : 'Ad #' + ad.getId();
@@ -412,98 +298,65 @@ function runMain(ACCOUNT_CONFIG) {
       } catch(e) {}
 
       batch.push({
-        ad_id:         ad.getId().toString(),
-        account_id:    myId,
-        campaign_name: ad.getCampaign().getName(),
-        type:          adType,
-        headline:      headlines.split(' | ')[0],
-        headlines:     headlines,
-        descriptions:  descriptions,
-        final_url:     ad.urls().getFinalUrl() || '',
-        clicks:        stats.getClicks(),
-        cost:          stats.getCost(),
-        status:        ad.isPaused() ? 'PAUSED' : 'ENABLED',
-        policy_status: policyStatus,
-        updated_at:    new Date().toISOString()
+        ad_id: ad.getId().toString(), account_id: myId, campaign_name: ad.getCampaign().getName(),
+        type: adType, headline: headlines.split(' | ')[0], headlines: headlines, descriptions: descriptions,
+        final_url: ad.urls().getFinalUrl() || '', clicks: stats.getClicks(), cost: stats.getCost(),
+        status: ad.isPaused() ? 'PAUSED' : 'ENABLED', policy_status: policyStatus, updated_at: new Date().toISOString()
       });
 
-      if (batch.length >= 50) {
-        apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ADS, batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
-        batch = [];
-      }
+      if (batch.length >= 50) { apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ADS, batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG); batch = []; }
     }
-
-    if (batch.length > 0) {
-      apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ADS, batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
-    }
+    if (batch.length > 0) { apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ADS, batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG); }
   }
 
   /* ====================== API CORE ====================== */
 
   function apiCall_(method, endpoint, payload, headersExtra, CONFIG) {
-    var url     = CONFIG.SUPABASE_URL + endpoint;
-    var key     = CONFIG.SUPABASE_KEY.replace(/\s/g, '');
-    var headers = {
-      'apikey':        key,
-      'Authorization': 'Bearer ' + key,
-      'Content-Type':  'application/json'
-    };
+    var url = CONFIG.SUPABASE_URL + endpoint;
+    var key = CONFIG.SUPABASE_KEY.replace(/\s/g, '');
+    var headers = { 'apikey': key, 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' };
     if (headersExtra) { for (var h in headersExtra) { headers[h] = headersExtra[h]; } }
 
-    var res = UrlFetchApp.fetch(url, {
-      method:             method,
-      headers:            headers,
-      payload:            payload ? JSON.stringify(payload) : null,
-      muteHttpExceptions: true
-    });
+    var res = UrlFetchApp.fetch(url, { method: method, headers: headers, payload: payload ? JSON.stringify(payload) : null, muteHttpExceptions: true });
+    
+    var code = res.getResponseCode();
+    if (code !== 200 && code !== 201 && code !== 204) {
+      Logger.log('[API_ERROR] ' + method.toUpperCase() + ' ' + endpoint + ' | Code: ' + code + ' | Body: ' + res.getContentText());
+    }
 
-    return (method === 'get' && res.getResponseCode() === 200)
-      ? JSON.parse(res.getContentText())
-      : null;
+    return (method === 'get' && code === 200) ? JSON.parse(res.getContentText()) : null;
   }
 
   function patchSupabase_(table, data, query, CONFIG) {
     var key = CONFIG.SUPABASE_KEY.replace(/\s/g, '');
     UrlFetchApp.fetch(CONFIG.SUPABASE_URL + '/rest/v1/' + table + '?' + query, {
-      method:             'patch',
-      contentType:        'application/json',
-      headers:            { 'apikey': key, 'Authorization': 'Bearer ' + key },
-      payload:            JSON.stringify(data),
-      muteHttpExceptions: true
+      method: 'patch', contentType: 'application/json', headers: { 'apikey': key, 'Authorization': 'Bearer ' + key },
+      payload: JSON.stringify(data), muteHttpExceptions: true
     });
   }
 
   /* ====================== HELPERS ====================== */
 
   function syncBidsFromRegistry_(myId, CONFIG) {
-    var data = apiCall_('get',
-      '/rest/v1/' + CONFIG.TABLE_ACCOUNTS + '?uid=eq.' + myId + '&select=target_cpc,needs_bid_sync',
-      null, null, CONFIG
-    );
+    var data = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS + '?uid=eq.' + myId + '&select=target_cpc,needs_bid_sync', null, null, CONFIG);
     if (data && data.length > 0 && data[0].needs_bid_sync) {
       var target = data[0].target_cpc;
-      var ags    = AdsApp.adGroups().withCondition('Status = ENABLED').get();
+      var ags = AdsApp.adGroups().withCondition('Status = ENABLED').get();
       while (ags.hasNext()) { ags.next().bidding().setCpc(target); }
-      apiCall_('patch', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS + '?uid=eq.' + myId, { needs_bid_sync: false }, null, CONFIG);
+      patchSupabase_(CONFIG.TABLE_ACCOUNTS, { needs_bid_sync: false }, 'uid=eq.' + myId, CONFIG);
     }
   }
 
   function getYesterdayDate_() {
-    var d    = new Date();
-    d.setDate(d.getDate() - 1);
-    var yyyy = d.getFullYear();
-    var mm   = ('0' + (d.getMonth() + 1)).slice(-2);
-    var dd   = ('0' + d.getDate()).slice(-2);
+    var d = new Date(); d.setDate(d.getDate() - 1);
+    var yyyy = d.getFullYear(); var mm = ('0' + (d.getMonth() + 1)).slice(-2); var dd = ('0' + d.getDate()).slice(-2);
     return yyyy + '-' + mm + '-' + dd;
   }
 
   function tgSend_(txt, CONFIG) {
     try {
       UrlFetchApp.fetch('https://api.telegram.org/bot' + CONFIG.TG_TOKEN + '/sendMessage', {
-        method:             'post',
-        contentType:        'application/json',
-        payload:            JSON.stringify({ chat_id: CONFIG.TG_CHAT_ID, text: txt, parse_mode: 'HTML' }),
-        muteHttpExceptions: true
+        method: 'post', contentType: 'application/json', payload: JSON.stringify({ chat_id: CONFIG.TG_CHAT_ID, text: txt, parse_mode: 'HTML' }), muteHttpExceptions: true
       });
     } catch(e) {}
   }
