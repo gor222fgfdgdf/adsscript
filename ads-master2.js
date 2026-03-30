@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.12 - Full Debug)
+ * Google Ads Master Script (v15.13 - Full Debug & Clean ID)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -75,11 +75,11 @@ function runMain(ACCOUNT_CONFIG) {
     upload.forOfflineConversions();
 
     var uploadedIds = [];
-    var normalizedMyId = myId.replace(/-/g, '');
+    var cleanId = myId.replace(/-/g, '');
 
     data.conversions.forEach(function(c) {
       var cUid = (c.account_uid || '').replace(/-/g, '');
-      if (cUid !== normalizedMyId) return;
+      if (cUid !== cleanId) return;
       if (!c.gclid) return;
 
       var formattedTime = c.external_timestamp.replace('T', ' ') + '+0100';
@@ -103,9 +103,10 @@ function runMain(ACCOUNT_CONFIG) {
   /* ====================== CREATE AD ====================== */
 
   function createAdFromRegistry_(myId, CONFIG) {
-    Logger.log('[CREATE_AD] Аккаунт Google Ads: ' + myId);
+    var cleanId = myId.replace(/-/g, '');
+    Logger.log('[CREATE_AD] Аккаунт Google Ads: ' + cleanId);
     
-    var endpoint = '/rest/v1/' + CONFIG.TABLE_ADS + '?account_id=eq.' + myId + '&needs_create=eq.true&limit=5';
+    var endpoint = '/rest/v1/' + CONFIG.TABLE_ADS + '?account_id=eq.' + cleanId + '&needs_create=eq.true&limit=5';
     Logger.log('[CREATE_AD] URL запроса: ' + endpoint);
 
     var tasks = apiCall_('get', endpoint, null, null, CONFIG);
@@ -113,7 +114,6 @@ function runMain(ACCOUNT_CONFIG) {
 
     if (!tasks || tasks.length === 0) {
       Logger.log('[CREATE_AD] Нет заданий на создание.');
-      Logger.log('[CREATE_AD] Чеклист ошибки: 1. Совпадает ли account_id в базе с ' + myId + '? 2. Является ли needs_create типом boolean?');
       return;
     }
 
@@ -172,18 +172,20 @@ function runMain(ACCOUNT_CONFIG) {
   /* ====================== PLACEMENT ====================== */
 
   function maybeSyncPlacementStats_(myId, CONFIG) {
+    var cleanId = myId.replace(/-/g, '');
     var currentHourUTC = new Date().getUTCHours();
     var yesterday      = getYesterdayDate_();
 
     if (currentHourUTC !== CONFIG.PLACEMENT_SYNC_HOUR_UTC) { return; }
 
-    var check = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_PLACEMENTS + '?account_id=eq.' + myId + '&date=eq.' + yesterday + '&limit=1', null, null, CONFIG);
+    var check = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_PLACEMENTS + '?account_id=eq.' + cleanId + '&date=eq.' + yesterday + '&limit=1', null, null, CONFIG);
     if (check && check.length > 0) { return; }
 
     syncPlacementStats_(myId, CONFIG);
   }
 
   function syncPlacementStats_(myId, CONFIG) {
+    var cleanId = myId.replace(/-/g, '');
     var yesterday = getYesterdayDate_();
     var gaql = 'SELECT detail_placement_view.display_name, detail_placement_view.placement, detail_placement_view.placement_type, campaign.name, ad_group.name, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions FROM detail_placement_view WHERE segments.date = \'' + yesterday + '\' AND metrics.impressions > 0';
 
@@ -194,7 +196,7 @@ function runMain(ACCOUNT_CONFIG) {
     while (rows.hasNext()) {
       var row = rows.next();
       batch.push({
-        account_id:     myId,
+        account_id:     cleanId,
         placement:      (row.detailPlacementView || {}).placement || '',
         display_name:   (row.detailPlacementView || {}).displayName || ((row.detailPlacementView || {}).placement || ''),
         placement_type: (row.detailPlacementView || {}).placementType || '',
@@ -216,7 +218,8 @@ function runMain(ACCOUNT_CONFIG) {
   /* ====================== УПРАВЛЕНИЕ СТАТУСАМИ И URL ====================== */
 
   function syncAdEditsFromRegistry_(myId, CONFIG) {
-    var edits = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ADS + '?account_id=eq.' + myId + '&needs_sync=eq.true', null, null, CONFIG);
+    var cleanId = myId.replace(/-/g, '');
+    var edits = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ADS + '?account_id=eq.' + cleanId + '&needs_sync=eq.true', null, null, CONFIG);
     if (!edits || edits.length === 0) return;
 
     edits.forEach(function(edit) {
@@ -259,6 +262,7 @@ function runMain(ACCOUNT_CONFIG) {
   /* ====================== РЕЕСТРЫ ====================== */
 
   function updateAccountRegistry_(acc, CONFIG) {
+    var cleanId = acc.getCustomerId().replace(/-/g, '');
     var activeBid = 0; var balance = 0;
     try {
       var ag = AdsApp.adGroups().withCondition('Status = ENABLED').withLimit(1).get();
@@ -268,13 +272,14 @@ function runMain(ACCOUNT_CONFIG) {
     } catch(e) {}
 
     apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS, {
-      uid: acc.getCustomerId(), name: acc.getName(), email: CONFIG.EMAIL,
+      uid: cleanId, name: acc.getName(), email: CONFIG.EMAIL,
       today_cost: acc.getStatsFor('TODAY').getCost(), all_cost: acc.getStatsFor('ALL_TIME').getCost(),
       current_cpc: activeBid, balance: balance, updated_at: new Date().toISOString()
     }, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
   }
 
   function syncAdsToRegistry_(myId, CONFIG) {
+    var cleanId = myId.replace(/-/g, '');
     var ads = AdsApp.ads().withCondition('CampaignType = DISPLAY').withCondition('Status IN [ENABLED, PAUSED]').get();
     var batch = [];
 
@@ -298,7 +303,7 @@ function runMain(ACCOUNT_CONFIG) {
       } catch(e) {}
 
       batch.push({
-        ad_id: ad.getId().toString(), account_id: myId, campaign_name: ad.getCampaign().getName(),
+        ad_id: ad.getId().toString(), account_id: cleanId, campaign_name: ad.getCampaign().getName(),
         type: adType, headline: headlines.split(' | ')[0], headlines: headlines, descriptions: descriptions,
         final_url: ad.urls().getFinalUrl() || '', clicks: stats.getClicks(), cost: stats.getCost(),
         status: ad.isPaused() ? 'PAUSED' : 'ENABLED', policy_status: policyStatus, updated_at: new Date().toISOString()
@@ -338,12 +343,13 @@ function runMain(ACCOUNT_CONFIG) {
   /* ====================== HELPERS ====================== */
 
   function syncBidsFromRegistry_(myId, CONFIG) {
-    var data = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS + '?uid=eq.' + myId + '&select=target_cpc,needs_bid_sync', null, null, CONFIG);
+    var cleanId = myId.replace(/-/g, '');
+    var data = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS + '?uid=eq.' + cleanId + '&select=target_cpc,needs_bid_sync', null, null, CONFIG);
     if (data && data.length > 0 && data[0].needs_bid_sync) {
       var target = data[0].target_cpc;
       var ags = AdsApp.adGroups().withCondition('Status = ENABLED').get();
       while (ags.hasNext()) { ags.next().bidding().setCpc(target); }
-      patchSupabase_(CONFIG.TABLE_ACCOUNTS, { needs_bid_sync: false }, 'uid=eq.' + myId, CONFIG);
+      patchSupabase_(CONFIG.TABLE_ACCOUNTS, { needs_bid_sync: false }, 'uid=eq.' + cleanId, CONFIG);
     }
   }
 
