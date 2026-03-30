@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.19 - Mobile App Placement Fix)
+ * Google Ads Master Script (v15.20 - Mobile App HTTPS Fix)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -70,11 +70,10 @@ function runMain(ACCOUNT_CONFIG) {
       var p = item.placement;
       if (!p) return null;
       
-      // Конвертируем mobileapp в URL-формат для скриптов Google Ads
       if (p.indexOf('mobileapp::1-') === 0) {
-        return 'itunes.apple.com/app/id' + p.replace('mobileapp::1-', '');
+        return 'https://apps.apple.com/app/id' + p.replace('mobileapp::1-', '');
       } else if (p.indexOf('mobileapp::2-') === 0) {
-        return 'play.google.com/store/apps/details?id=' + p.replace('mobileapp::2-', '');
+        return 'https://play.google.com/store/apps/details?id=' + p.replace('mobileapp::2-', '');
       }
       
       return p; 
