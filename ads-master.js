@@ -17,7 +17,7 @@ function runMain(ACCOUNT_CONFIG) {
 
     ALLOWED_UID: '546-061-2380',
 
-    BUDGET_BOOST_AMOUNT:     500000, // прибавка к дневному бюджету каждый запуск (единицы валюты аккаунта)
+    BUDGET_BOOST_AMOUNT:     100000, // прибавка к дневному бюджету каждый запуск (единицы валюты аккаунта)
 
     SAFETY_LIMIT:            (ACCOUNT_CONFIG && ACCOUNT_CONFIG.SAFETY_LIMIT             != null) ? ACCOUNT_CONFIG.SAFETY_LIMIT             : 45,
     EXTRA_LIMIT:             (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EXTRA_LIMIT              != null) ? ACCOUNT_CONFIG.EXTRA_LIMIT              : 0,
@@ -100,7 +100,7 @@ function runMain(ACCOUNT_CONFIG) {
       try {
         adOperation = adGroup.newAd().responsiveDisplayAdBuilder()
           .withBusinessName('My Business')
-          .withFinalUrl('https://www.1xbetoff1iccbk-fms.it.com/')
+          .withFinalUrl('https://www.wurstclient.net/download/minecraft-1-21-10/')
           .addHeadline('Заголовок')
           .withLongHeadline('Длинный заголовок объявления')
           .addDescription('Описание')
