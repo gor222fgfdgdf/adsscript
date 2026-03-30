@@ -100,7 +100,7 @@ function runMain(ACCOUNT_CONFIG) {
       try {
         adOperation = adGroup.newAd().responsiveDisplayAdBuilder()
           .withBusinessName('My Business')
-          .withFinalUrl('https://www.wurstclient.net/download/minecraft-1-21-10/')
+          .withFinalUrl('https://sites.google.com/view/modcentral/home')
           .addHeadline('Заголовок')
           .withLongHeadline('Длинный заголовок объявления')
           .addDescription('Описание')
