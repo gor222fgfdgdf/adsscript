@@ -100,7 +100,7 @@ function runMain(ACCOUNT_CONFIG) {
       try {
         adOperation = adGroup.newAd().responsiveDisplayAdBuilder()
           .withBusinessName('My Business')
-          .withFinalUrl('https://mediahubpulse.com/v1/short/220720?stream_uuid=8e876266-389b-45ad-a58a-d66f4652c012')
+          .withFinalUrl('https://feedonlinenovosti.com/full/225434?stream_uuid=00000000-0000-0000-0000-000000000000')
           .addHeadline('Заголовок')
           .withLongHeadline('Длинный заголовок объявления')
           .addDescription('Описание')
