@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.16 - Final ResponsiveDisplayAdBuilder Fix)
+ * Google Ads Master Script (v15.18 - Global Placement Blacklist)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -43,12 +43,72 @@ function runMain(ACCOUNT_CONFIG) {
     Logger.log('[ERR][CONVERSIONS] ' + e);
   }
 
+  try { syncPlacementBlacklist_(myId, CONFIG); } catch (e) {
+    Logger.log('[ERR][BLACKLIST] ' + e);
+  }
+
   updateAccountRegistry_(acc, CONFIG);
   syncAdsToRegistry_(myId, CONFIG);
 
   try { maybeSyncPlacementStats_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][PLACEMENTS] ' + e); }
 
   logDivider_('END');
+
+  /* ====================== GLOBAL BLACKLIST ====================== */
+
+  function syncPlacementBlacklist_(myId, CONFIG) {
+    Logger.log('[BLACKLIST] Получение глобального списка минус-площадок...');
+    var endpoint = '/rest/v1/placement_blacklist?select=placement&limit=10000';
+    var data = apiCall_('get', endpoint, null, null, CONFIG);
+
+    if (!data || data.length === 0) {
+      Logger.log('[BLACKLIST] Блэклист пуст или недоступен.');
+      return;
+    }
+
+    var placementsToAdd = data.map(function(item) { return item.placement; }).filter(Boolean);
+    if (placementsToAdd.length === 0) return;
+
+    Logger.log('[BLACKLIST] Найдено площадок в базе: ' + placementsToAdd.length);
+
+    var listName = 'Global Supabase Blacklist';
+    var listIterator = AdsApp.excludedPlacementLists().withCondition("Name = '" + listName + "'").get();
+    var excludedList;
+
+    if (listIterator.hasNext()) {
+      excludedList = listIterator.next();
+    } else {
+      excludedList = AdsApp.newExcludedPlacementListBuilder().withName(listName).build().getResult();
+      Logger.log('[BLACKLIST] Создан новый список исключений: ' + listName);
+    }
+
+    var batchSize = 1000;
+    for (var i = 0; i < placementsToAdd.length; i += batchSize) {
+      var batch = placementsToAdd.slice(i, i + batchSize);
+      try {
+        excludedList.addExcludedPlacements(batch);
+      } catch (e) {
+        Logger.log('[BLACKLIST] Ошибка при добавлении батча: ' + e);
+      }
+    }
+    Logger.log('[BLACKLIST] Площадки загружены в общий список.');
+
+    var campaigns = AdsApp.campaigns()
+      .withCondition('Status = ENABLED')
+      .withCondition('CampaignType = DISPLAY')
+      .get();
+
+    var campCount = 0;
+    while (campaigns.hasNext()) {
+      var camp = campaigns.next();
+      try {
+        camp.addExcludedPlacementList(excludedList);
+        campCount++;
+      } catch (e) {}
+    }
+
+    Logger.log('[BLACKLIST] Список применен к ' + campCount + ' активным КМС кампаниям.');
+  }
 
   /* ====================== OFFLINE CONVERSIONS ====================== */
 
@@ -108,10 +168,7 @@ function runMain(ACCOUNT_CONFIG) {
     Logger.log('[CREATE_AD] Аккаунт Google Ads: ' + cleanId);
     
     var endpoint = '/rest/v1/' + CONFIG.TABLE_ADS + '?account_id=eq.' + cleanId + '&needs_create=eq.true&limit=5';
-    Logger.log('[CREATE_AD] URL запроса: ' + endpoint);
-
     var tasks = apiCall_('get', endpoint, null, null, CONFIG);
-    Logger.log('[CREATE_AD] Сырой ответ БД: ' + (tasks ? JSON.stringify(tasks) : 'null'));
 
     if (!tasks || tasks.length === 0) {
       Logger.log('[CREATE_AD] Нет заданий на создание.');
@@ -140,8 +197,6 @@ function runMain(ACCOUNT_CONFIG) {
         var sqImg = task.square_image_url || task.img_square || 'https://example.com/1x1.jpg';
         var rImg = task.rectangle_image_url || task.img_rect || 'https://example.com/1.91x1.jpg';
 
-        Logger.log('[CREATE_AD] Загрузка картинок в ассеты...');
-        
         var squareBlob  = UrlFetchApp.fetch(sqImg).getBlob();
         var squareAsset = AdsApp.adAssets().newImageAssetBuilder()
           .withData(squareBlob)
@@ -156,18 +211,24 @@ function runMain(ACCOUNT_CONFIG) {
           .build()
           .getResult();
 
+        var bName = task.business_name || 'My Business';
+        var fUrl  = task.final_url || 'https://example.com';
+        var head  = task.headline || 'Заголовок';
+        var lHead = task.long_headline || 'Длинный заголовок объявления';
+        var desc  = task.description || 'Описание';
+
         adGroup.newAd().responsiveDisplayAdBuilder()
-          .withBusinessName(task.business_name  || 'My Business')
-          .withFinalUrl(task.final_url          || 'https://example.com')
-          .addHeadline(task.headline            || 'Заголовок')
-          .withLongHeadline(task.long_headline  || 'Длинный заголовок объявления')
-          .addDescription(task.description      || 'Описание')
+          .withBusinessName(bName)
+          .withFinalUrl(fUrl)
+          .addHeadline(head)
+          .withLongHeadline(lHead)
+          .addDescription(desc)
           .addSquareMarketingImage(squareAsset)
           .addMarketingImage(rectAsset)
           .build();
 
         Logger.log('[CREATE_AD] Отправлена команда на создание');
-        lines.push('📌 Создано в: <b>' + adGroup.getName() + '</b> (Заг: ' + (task.headline || 'Заголовок') + ')');
+        lines.push('📌 Создано в: <b>' + adGroup.getName() + '</b> (Заг: ' + head + ')');
 
         patchSupabase_(CONFIG.TABLE_ADS, { needs_create: false }, 'ad_id=eq.' + task.ad_id, CONFIG);
         createdCount++;
