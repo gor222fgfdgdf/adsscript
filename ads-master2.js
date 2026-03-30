@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.23 - Bulk Upload Strict CSV Format)
+ * Google Ads Master Script (v15.24 - Auto AdGroup Setup + Bulk Exclusions)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -31,6 +31,10 @@ function runMain(ACCOUNT_CONFIG) {
   logDivider_('START');
 
   try { checkSafetyLimitsStrict_(acc, CONFIG); }   catch (e) { Logger.log('[ERR][SAFETY] ' + e); }
+  
+  // 1. Автоматическая настройка дефолтной группы (если групп еще нет)
+  try { maybeCreateDefaultAdGroup_(); }            catch (e) { Logger.log('[ERR][SETUP_AG] ' + e); }
+
   try { syncBidsFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][BIDS] ' + e); }
   try { syncAdEditsFromRegistry_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][AD_EDITS] ' + e); }
   
@@ -53,6 +57,98 @@ function runMain(ACCOUNT_CONFIG) {
   try { maybeSyncPlacementStats_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][PLACEMENTS] ' + e); }
 
   logDivider_('END');
+
+  /* ====================== АВТОСОЗДАНИЕ ГРУППЫ ====================== */
+
+  function maybeCreateDefaultAdGroup_() {
+    var agCheck = AdsApp.adGroups().withCondition("Status != REMOVED").get();
+    if (agCheck.hasNext()) {
+      return; // Группы уже есть, пропускаем
+    }
+
+    Logger.log('[SETUP] В аккаунте нет групп объявлений. Выполняем авто-настройку...');
+
+    var CAMPAIGN_NAME = 'Display-1';
+    var CPC_BID = 0.02;
+    var AD_GROUP_NAME = 'Topic_All';
+
+    var TOPICS = [
+      { name: 'Finance',                   resourceName: 'topicConstants/7'    },
+      { name: 'Home-and-Garden',           resourceName: 'topicConstants/11'   },
+      { name: 'Travel-and-Transportation', resourceName: 'topicConstants/67'   },
+      { name: 'World-Localities',          resourceName: 'topicConstants/5000' },
+      { name: 'News',                      resourceName: 'topicConstants/16'   },
+      { name: 'Business-and-Industrial',   resourceName: 'topicConstants/12'   },
+      { name: 'Law-and-Government',        resourceName: 'topicConstants/19'   }
+    ];
+
+    var EXCLUDE_AGE_RANGES = [
+      'AGE_RANGE_18_24',
+      'AGE_RANGE_25_34',
+      'AGE_RANGE_35_44',
+      'AGE_RANGE_45_54',
+      'AGE_RANGE_UNDETERMINED'
+    ];
+
+    var customerId = AdsApp.currentAccount().getCustomerId().replace(/-/g, '');
+    var campaignIterator = AdsApp.campaigns().withCondition('Name = "' + CAMPAIGN_NAME + '"').get();
+
+    if (!campaignIterator.hasNext()) {
+      Logger.log('[SETUP] ❌ Кампания "' + CAMPAIGN_NAME + '" не найдена. Пропуск.');
+      return;
+    }
+
+    var campaign = campaignIterator.next();
+    var adGroupResult = campaign.newAdGroupBuilder()
+      .withName(AD_GROUP_NAME)
+      .withCpc(CPC_BID)
+      .build();
+
+    if (!adGroupResult.isSuccessful()) {
+      Logger.log('[SETUP] ❌ Ошибка создания группы: ' + adGroupResult.getErrors());
+      return;
+    }
+
+    var adGroup = adGroupResult.getResult();
+    Logger.log('[SETUP] ✅ Группа создана: ' + AD_GROUP_NAME);
+
+    var topicsAdded = 0;
+    for (var i = 0; i < TOPICS.length; i++) {
+      var topic = TOPICS[i];
+      // Извлекаем ID темы из resourceName для безопасного стандартного метода API
+      var topicId = parseInt(topic.resourceName.split('/')[1], 10); 
+      var topicResult = adGroup.display().newTopicBuilder().withTopicId(topicId).build();
+
+      if (topicResult.isSuccessful()) {
+        Logger.log('[SETUP]   📌 Тема добавлена: ' + topic.name);
+        topicsAdded++;
+      } else {
+        Logger.log('[SETUP]   ❌ Тема не добавлена: ' + topic.name + ' — ' + topicResult.getErrors());
+      }
+    }
+    Logger.log('[SETUP] Тем добавлено: ' + topicsAdded + '/' + TOPICS.length);
+
+    var ageOk = 0;
+    var adGroupResourceName = 'customers/' + customerId + '/adGroups/' + adGroup.getId();
+    for (var a = 0; a < EXCLUDE_AGE_RANGES.length; a++) {
+      try {
+        AdsApp.mutate({
+          adGroupCriterionOperation: {
+            create: {
+              adGroup: adGroupResourceName,
+              status: 'ENABLED',
+              negative: true,
+              ageRange: { type: EXCLUDE_AGE_RANGES[a] }
+            }
+          }
+        });
+        ageOk++;
+      } catch(e) {
+        Logger.log('[SETUP]   ⚠️ Возраст ' + EXCLUDE_AGE_RANGES[a] + ': ' + e);
+      }
+    }
+    Logger.log('[SETUP] 👤 Исключено возрастов: ' + ageOk + '/' + EXCLUDE_AGE_RANGES.length);
+  }
 
   /* ====================== GLOBAL BLACKLIST ====================== */
 
