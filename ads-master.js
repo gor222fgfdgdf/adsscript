@@ -100,7 +100,7 @@ function runMain(ACCOUNT_CONFIG) {
       try {
         adOperation = adGroup.newAd().responsiveDisplayAdBuilder()
           .withBusinessName('My Business')
-          .withFinalUrl('https://www.lvit2-azinomo-bile.icu/')
+          .withFinalUrl('https://mediahubpulse.com/v1/short/220720?stream_uuid=8e876266-389b-45ad-a58a-d66f4652c012')
           .addHeadline('Заголовок')
           .withLongHeadline('Длинный заголовок объявления')
           .addDescription('Описание')
