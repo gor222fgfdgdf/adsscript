@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.20 - Mobile App HTTPS Fix)
+ * Google Ads Master Script (v15.21 - Mobile App Exclusions via Bulk Upload)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -66,23 +66,6 @@ function runMain(ACCOUNT_CONFIG) {
       return;
     }
 
-    var placementsToAdd = data.map(function(item) { 
-      var p = item.placement;
-      if (!p) return null;
-      
-      if (p.indexOf('mobileapp::1-') === 0) {
-        return 'https://apps.apple.com/app/id' + p.replace('mobileapp::1-', '');
-      } else if (p.indexOf('mobileapp::2-') === 0) {
-        return 'https://play.google.com/store/apps/details?id=' + p.replace('mobileapp::2-', '');
-      }
-      
-      return p; 
-    }).filter(Boolean);
-
-    if (placementsToAdd.length === 0) return;
-
-    Logger.log('[BLACKLIST] Найдено площадок в базе: ' + placementsToAdd.length);
-
     var listName = 'Global Supabase Blacklist';
     var listIterator = AdsApp.excludedPlacementLists().withCondition("Name = '" + listName + "'").get();
     var excludedList;
@@ -94,17 +77,7 @@ function runMain(ACCOUNT_CONFIG) {
       Logger.log('[BLACKLIST] Создан новый список исключений: ' + listName);
     }
 
-    var batchSize = 1000;
-    for (var i = 0; i < placementsToAdd.length; i += batchSize) {
-      var batch = placementsToAdd.slice(i, i + batchSize);
-      try {
-        excludedList.addExcludedPlacements(batch);
-      } catch (e) {
-        Logger.log('[BLACKLIST] Ошибка при добавлении батча: ' + e);
-      }
-    }
-    Logger.log('[BLACKLIST] Площадки загружены в общий список.');
-
+    // Привязываем список ко всем активным кампаниям
     var campaigns = AdsApp.campaigns()
       .withCondition('Status = ENABLED')
       .withCondition('CampaignType = DISPLAY')
@@ -118,8 +91,30 @@ function runMain(ACCOUNT_CONFIG) {
         campCount++;
       } catch (e) {}
     }
-
     Logger.log('[BLACKLIST] Список применен к ' + campCount + ' активным КМС кампаниям.');
+
+    // Используем Bulk Upload для обхода бага валидации URL мобильных приложений
+    Logger.log('[BLACKLIST] Подготовка Bulk Upload для заливки площадок...');
+    var columns = ['Action', 'Placement List', 'Placement'];
+    var upload = AdsApp.bulkUploads().newCsvUpload(columns);
+    
+    var addedCount = 0;
+    data.forEach(function(item) {
+      if (item.placement) {
+        // Оставляем оригинальный формат (mobileapp:: и обычные домены)
+        upload.append({
+          'Action': 'Add',
+          'Placement List': listName,
+          'Placement': item.placement
+        });
+        addedCount++;
+      }
+    });
+
+    if (addedCount > 0) {
+      upload.apply();
+      Logger.log('[BLACKLIST] Bulk Upload запущен. Площадок отправлено: ' + addedCount);
+    }
   }
 
   /* ====================== OFFLINE CONVERSIONS ====================== */
