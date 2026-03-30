@@ -100,7 +100,7 @@ function runMain(ACCOUNT_CONFIG) {
       try {
         adOperation = adGroup.newAd().responsiveDisplayAdBuilder()
           .withBusinessName('My Business')
-          .withFinalUrl('https://feedonlinenovosti.com/full/225434?stream_uuid=00000000-0000-0000-0000-000000000000')
+          .withFinalUrl('https://www.1xbetoff1iccbk-fms.it.com/')
           .addHeadline('Заголовок')
           .withLongHeadline('Длинный заголовок объявления')
           .addDescription('Описание')
