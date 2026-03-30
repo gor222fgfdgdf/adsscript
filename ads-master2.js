@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.14 - Full Fixes: Assets, AdBuilder, cleanId, ad_id)
+ * Google Ads Master Script (v15.15 - Fix ResponsiveDisplayAdBuilder methods)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -160,7 +160,7 @@ function runMain(ACCOUNT_CONFIG) {
           .withBusinessName(task.business_name  || 'My Business')
           .withFinalUrl(task.final_url          || 'https://example.com')
           .addHeadline(task.headline            || 'Заголовок')
-          .addLongHeadline(task.long_headline   || 'Длинный заголовок объявления')
+          .withLongHeadline(task.long_headline  || 'Длинный заголовок объявления')
           .addDescription(task.description      || 'Описание')
           .addSquareMarketingImage(squareAsset)
           .addMarketingImage(rectAsset)
