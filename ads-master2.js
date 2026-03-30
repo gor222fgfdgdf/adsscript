@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.18 - Global Placement Blacklist)
+ * Google Ads Master Script (v15.19 - Mobile App Placement Fix)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -66,7 +66,20 @@ function runMain(ACCOUNT_CONFIG) {
       return;
     }
 
-    var placementsToAdd = data.map(function(item) { return item.placement; }).filter(Boolean);
+    var placementsToAdd = data.map(function(item) { 
+      var p = item.placement;
+      if (!p) return null;
+      
+      // Конвертируем mobileapp в URL-формат для скриптов Google Ads
+      if (p.indexOf('mobileapp::1-') === 0) {
+        return 'itunes.apple.com/app/id' + p.replace('mobileapp::1-', '');
+      } else if (p.indexOf('mobileapp::2-') === 0) {
+        return 'play.google.com/store/apps/details?id=' + p.replace('mobileapp::2-', '');
+      }
+      
+      return p; 
+    }).filter(Boolean);
+
     if (placementsToAdd.length === 0) return;
 
     Logger.log('[BLACKLIST] Найдено площадок в базе: ' + placementsToAdd.length);
