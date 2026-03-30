@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.13 - Full Debug & Clean ID)
+ * Google Ads Master Script (v15.14 - Full Fixes: Assets, AdBuilder, cleanId, ad_id)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -97,6 +97,7 @@ function runMain(ACCOUNT_CONFIG) {
       upload.apply();
       Logger.log('[CONVERSIONS] Отправлено: ' + uploadedIds.length);
       UrlFetchApp.fetch(url, { method: 'post', headers: headers, payload: JSON.stringify({ ids: uploadedIds }), muteHttpExceptions: true });
+      tgSend_('✅ <b>Заливка конверсий</b>\nАкк: <code>' + myId + '</code>\nУспешно отправлено: ' + uploadedIds.length, CONFIG);
     }
   }
 
@@ -121,7 +122,7 @@ function runMain(ACCOUNT_CONFIG) {
     var lines = [];
 
     tasks.forEach(function(task) {
-      Logger.log('[CREATE_AD] Обработка задания ID: ' + task.id);
+      Logger.log('[CREATE_AD] Обработка задания ID: ' + task.ad_id);
       try {
         var agIterator = AdsApp.adGroups()
           .withCondition('Status = ENABLED')
@@ -139,23 +140,36 @@ function runMain(ACCOUNT_CONFIG) {
         var sqImg = task.square_image_url || task.img_square || 'https://example.com/1x1.jpg';
         var rImg = task.rectangle_image_url || task.img_rect || 'https://example.com/1.91x1.jpg';
 
-        Logger.log('[CREATE_AD] URL Квадрат: ' + sqImg);
-        Logger.log('[CREATE_AD] URL Прямоугольник: ' + rImg);
+        Logger.log('[CREATE_AD] Загрузка картинок в ассеты...');
+        
+        var squareBlob  = UrlFetchApp.fetch(sqImg).getBlob();
+        var squareAsset = AdsApp.adAssets().newImageAssetBuilder()
+          .withData(squareBlob)
+          .withName('Sq_' + (task.ad_id || 'new').substring(0, 15))
+          .build()
+          .getResult();
+
+        var rectBlob  = UrlFetchApp.fetch(rImg).getBlob();
+        var rectAsset = AdsApp.adAssets().newImageAssetBuilder()
+          .withData(rectBlob)
+          .withName('Rect_' + (task.ad_id || 'new').substring(0, 15))
+          .build()
+          .getResult();
 
         adGroup.newAd().responsiveDisplayAdBuilder()
           .withBusinessName(task.business_name  || 'My Business')
-          .withHeadline(task.headline           || 'Заголовок')
-          .withLongHeadline(task.long_headline  || 'Длинный заголовок объявления')
-          .withDescription(task.description     || 'Описание')
           .withFinalUrl(task.final_url          || 'https://example.com')
-          .withSquareMarketingImage(sqImg)
-          .withMarketingImage(rImg)
+          .addHeadline(task.headline            || 'Заголовок')
+          .addLongHeadline(task.long_headline   || 'Длинный заголовок объявления')
+          .addDescription(task.description      || 'Описание')
+          .addSquareMarketingImage(squareAsset)
+          .addMarketingImage(rectAsset)
           .build();
 
         Logger.log('[CREATE_AD] Отправлена команда на создание');
         lines.push('📌 Создано в: <b>' + adGroup.getName() + '</b> (Заг: ' + (task.headline || 'Заголовок') + ')');
 
-        patchSupabase_(CONFIG.TABLE_ADS, { needs_create: false }, 'id=eq.' + task.id, CONFIG);
+        patchSupabase_(CONFIG.TABLE_ADS, { needs_create: false }, 'ad_id=eq.' + task.ad_id, CONFIG);
         createdCount++;
 
       } catch(e) {
