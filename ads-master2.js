@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.21 - Mobile App Exclusions via Bulk Upload)
+ * Google Ads Master Script (v15.23 - Bulk Upload Strict CSV Format)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -77,7 +77,6 @@ function runMain(ACCOUNT_CONFIG) {
       Logger.log('[BLACKLIST] Создан новый список исключений: ' + listName);
     }
 
-    // Привязываем список ко всем активным кампаниям
     var campaigns = AdsApp.campaigns()
       .withCondition('Status = ENABLED')
       .withCondition('CampaignType = DISPLAY')
@@ -93,19 +92,20 @@ function runMain(ACCOUNT_CONFIG) {
     }
     Logger.log('[BLACKLIST] Список применен к ' + campCount + ' активным КМС кампаниям.');
 
-    // Используем Bulk Upload для обхода бага валидации URL мобильных приложений
-    Logger.log('[BLACKLIST] Подготовка Bulk Upload для заливки площадок...');
-    var columns = ['Action', 'Placement List', 'Placement'];
+    Logger.log('[BLACKLIST] Подготовка Bulk Upload (формат CSV)...');
+    var columns = ['Row Type', 'Action', 'Customer ID', 'Placement Exclusion List ID', 'Placement Exclusion List Name', 'Placement Exclusion'];
     var upload = AdsApp.bulkUploads().newCsvUpload(columns);
     
     var addedCount = 0;
     data.forEach(function(item) {
       if (item.placement) {
-        // Оставляем оригинальный формат (mobileapp:: и обычные домены)
         upload.append({
+          'Row Type': 'Negative Placement',
           'Action': 'Add',
-          'Placement List': listName,
-          'Placement': item.placement
+          'Customer ID': '',
+          'Placement Exclusion List ID': '',
+          'Placement Exclusion List Name': listName,
+          'Placement Exclusion': item.placement
         });
         addedCount++;
       }
