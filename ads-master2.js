@@ -1,0 +1,513 @@
+/**
+ * Google Ads Master Script (v15.11 - Offline Conversions via Edge Function)
+ */
+
+function runMain(ACCOUNT_CONFIG) {
+
+  var CONFIG = {
+    SUPABASE_URL: 'https://bdnppvkjpknwjlhhaarw.supabase.co',
+    SUPABASE_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJkbnBwdmtqcGtud2psaGhhYXJ3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgxOTE2MDEsImV4cCI6MjA4Mzc2NzYwMX0.-Xs7L7prn4RjIXMy4Ya3DrcLh8q3R-7m2Dd_GbQk-fI',
+
+    TABLE_ACCOUNTS:   'account_registry',
+    TABLE_ADS:        'display_ads_registry',
+    TABLE_PLACEMENTS: 'placement_stats',
+
+    TG_TOKEN:   '5203374800:AAGZ6T72DxmjVnqbza92O0y2SJyk2lw0Pr4',
+    TG_CHAT_ID: 37742949,
+
+    CONVERSION_NAME: 'offline (Upload)', // Замените на точное название конверсии из аккаунта
+
+    SAFETY_LIMIT:            (ACCOUNT_CONFIG && ACCOUNT_CONFIG.SAFETY_LIMIT             != null) ? ACCOUNT_CONFIG.SAFETY_LIMIT             : 45,
+    EXTRA_LIMIT:             (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EXTRA_LIMIT              != null) ? ACCOUNT_CONFIG.EXTRA_LIMIT              : 0,
+    PLACEMENT_SYNC_HOUR_UTC: (ACCOUNT_CONFIG && ACCOUNT_CONFIG.PLACEMENT_SYNC_HOUR_UTC != null) ? ACCOUNT_CONFIG.PLACEMENT_SYNC_HOUR_UTC : 10,
+    EMAIL:                   (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EMAIL                           ) ? ACCOUNT_CONFIG.EMAIL                    : ''
+  };
+
+  Logger.log('[CONFIG] SAFETY_LIMIT=' + CONFIG.SAFETY_LIMIT + ' EXTRA_LIMIT=' + CONFIG.EXTRA_LIMIT + ' EMAIL=' + CONFIG.EMAIL);
+
+  var acc  = AdsApp.currentAccount();
+  var myId = acc.getCustomerId();
+
+  logDivider_('START');
+
+  try { checkSafetyLimitsStrict_(acc, CONFIG); }   catch (e) { Logger.log('[ERR][SAFETY] ' + e); }
+  try { syncBidsFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][BIDS] ' + e); }
+  try { syncAdEditsFromRegistry_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][AD_EDITS] ' + e); }
+  
+  try { createAdFromRegistry_(myId, CONFIG); }     catch (e) {
+    Logger.log('[ERR][CREATE_AD] ' + e);
+    tgSend_('❌ <b>Create Ad — ОШИБКА</b>\nАкк: <code>' + myId + '</code>\n' + e, CONFIG);
+  }
+
+  try { uploadConversionsFromEdge_(myId, CONFIG); } catch (e) {
+    Logger.log('[ERR][CONVERSIONS] ' + e);
+    tgSend_('❌ <b>Офлайн Конверсии — ОШИБКА</b>\nАкк: <code>' + myId + '</code>\n' + e, CONFIG);
+  }
+
+  updateAccountRegistry_(acc, CONFIG);
+  syncAdsToRegistry_(myId, CONFIG);
+
+  try { maybeSyncPlacementStats_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][PLACEMENTS] ' + e); }
+
+  logDivider_('END');
+
+  /* ====================== OFFLINE CONVERSIONS ====================== */
+
+  function uploadConversionsFromEdge_(myId, CONFIG) {
+    if (!CONFIG.CONVERSION_NAME) {
+      Logger.log('[CONVERSIONS] Имя конверсии не задано (CONFIG.CONVERSION_NAME)');
+      return;
+    }
+
+    var url = CONFIG.SUPABASE_URL + '/functions/v1/fetch-postbacks';
+    var headers = {
+      'Authorization': 'Bearer ' + CONFIG.SUPABASE_KEY.replace(/\s/g, ''),
+      'Content-Type':  'application/json'
+    };
+
+    // Шаг 1: Получение конверсий
+    var getRes = UrlFetchApp.fetch(url, {
+      method: 'get',
+      headers: headers,
+      muteHttpExceptions: true
+    });
+
+    if (getRes.getResponseCode() !== 200) {
+      Logger.log('[CONVERSIONS] Ошибка GET: ' + getRes.getContentText());
+      return;
+    }
+
+    var data = JSON.parse(getRes.getContentText());
+    
+    if (!data.conversions || data.count === 0 || data.conversions.length === 0) {
+      Logger.log('[CONVERSIONS] Нет конверсий для загрузки');
+      return;
+    }
+
+    var columns = [
+      'Google Click ID',
+      'Conversion Name',
+      'Conversion Time',
+      'Conversion Value',
+      'Conversion Currency'
+    ];
+
+    var upload = AdsApp.bulkUploads().newCsvUpload(columns);
+    upload.forOfflineConversions();
+
+    var uploadedIds = [];
+    var normalizedMyId = myId.replace(/-/g, '');
+
+    data.conversions.forEach(function(c) {
+      // Загружаем только те, что относятся к текущему аккаунту
+      var cUid = (c.account_uid || '').replace(/-/g, '');
+      if (cUid !== normalizedMyId) return;
+      if (!c.gclid) return;
+
+      // Приведение к формату Google Ads (добавляем часовой пояс GMT+1)
+      var formattedTime = c.external_timestamp.replace('T', ' ') + '+0100';
+
+      upload.append({
+        'Google Click ID': c.gclid,
+        'Conversion Name': CONFIG.CONVERSION_NAME,
+        'Conversion Time': formattedTime,
+        'Conversion Value': c.payout || 0,
+        'Conversion Currency': c.currency || 'USD'
+      });
+
+      uploadedIds.push(c.id);
+    });
+
+    // Шаг 2: Отправка в Google Ads и подтверждение в БД
+    if (uploadedIds.length > 0) {
+      upload.apply();
+      Logger.log('[CONVERSIONS] Отправлено в Google Ads: ' + uploadedIds.length);
+
+      var postRes = UrlFetchApp.fetch(url, {
+        method: 'post',
+        headers: headers,
+        payload: JSON.stringify({ ids: uploadedIds }),
+        muteHttpExceptions: true
+      });
+
+      if (postRes.getResponseCode() === 200 || postRes.getResponseCode() === 201) {
+        Logger.log('[CONVERSIONS] Успешно подтверждено в БД');
+      } else {
+        Logger.log('[CONVERSIONS] Ошибка подтверждения в БД: ' + postRes.getContentText());
+      }
+
+      tgSend_('✅ <b>Заливка конверсий</b>\nАкк: <code>' + myId + '</code>\nУспешно отправлено: ' + uploadedIds.length, CONFIG);
+    } else {
+      Logger.log('[CONVERSIONS] Конверсии для текущего аккаунта не найдены в ответе БД');
+    }
+  }
+
+  /* ====================== CREATE AD ====================== */
+
+  function createAdFromRegistry_(myId, CONFIG) {
+    var tasks = apiCall_('get',
+      '/rest/v1/' + CONFIG.TABLE_ADS +
+      '?account_id=eq.' + myId +
+      '&needs_create=eq.true' +
+      '&limit=5',
+      null, null, CONFIG
+    );
+
+    if (!tasks || tasks.length === 0) {
+      Logger.log('[CREATE_AD] Нет заданий на создание');
+      return;
+    }
+
+    var createdCount = 0;
+    var lines = [];
+
+    tasks.forEach(function(task) {
+      try {
+        var agIterator = AdsApp.adGroups()
+          .withCondition('Status = ENABLED')
+          .withCondition('CampaignType = DISPLAY')
+          .get();
+
+        if (!agIterator.hasNext()) {
+          Logger.log('[CREATE_AD] Нет активных групп объявлений');
+          return;
+        }
+
+        var adGroup = agIterator.next();
+
+        adGroup.newAd().responsiveDisplayAdBuilder()
+          .withBusinessName(task.business_name  || 'My Business')
+          .withHeadline(task.headline           || 'Заголовок')
+          .withLongHeadline(task.long_headline  || 'Длинный заголовок объявления')
+          .withDescription(task.description     || 'Описание')
+          .withFinalUrl(task.final_url          || 'https://example.com')
+          .withSquareMarketingImage(task.img_square || 'https://example.com/1x1.jpg')
+          .withMarketingImage(task.img_rect         || 'https://example.com/1.91x1.jpg')
+          .build();
+
+        Logger.log('[CREATE_AD] Создано в группе: ' + adGroup.getName());
+        lines.push('📌 Создано в: <b>' + adGroup.getName() + '</b> (Заг: ' + (task.headline || 'Заголовок') + ')');
+
+        patchSupabase_(CONFIG.TABLE_ADS, { needs_create: false }, 'id=eq.' + task.id, CONFIG);
+        createdCount++;
+
+      } catch(e) {
+        Logger.log('[CREATE_AD] Ошибка: ' + e);
+        lines.push('⚠️ Ошибка: ' + e.message);
+      }
+    });
+
+    if (lines.length > 0) {
+      var msg =
+        '✅ <b>Create Ads</b>\n' +
+        'Акк: <code>' + myId + '</code>\n' +
+        'Успешно создано: ' + createdCount + '\n\n' +
+        lines.join('\n');
+      tgSend_(msg, CONFIG);
+    }
+  }
+
+  /* ====================== PLACEMENT ====================== */
+
+  function maybeSyncPlacementStats_(myId, CONFIG) {
+    var currentHourUTC = new Date().getUTCHours();
+    var yesterday      = getYesterdayDate_();
+
+    if (currentHourUTC !== CONFIG.PLACEMENT_SYNC_HOUR_UTC) {
+      Logger.log('[PLACEMENTS] Skip — not sync hour (now=' + currentHourUTC + ' UTC, expected=' + CONFIG.PLACEMENT_SYNC_HOUR_UTC + ')');
+      return;
+    }
+
+    var check = apiCall_('get',
+      '/rest/v1/' + CONFIG.TABLE_PLACEMENTS +
+      '?account_id=eq.' + myId +
+      '&date=eq.'       + yesterday +
+      '&limit=1',
+      null, null, CONFIG
+    );
+
+    if (check && check.length > 0) {
+      Logger.log('[PLACEMENTS] Skip — already synced for ' + yesterday);
+      return;
+    }
+
+    syncPlacementStats_(myId, CONFIG);
+  }
+
+  function syncPlacementStats_(myId, CONFIG) {
+    var yesterday = getYesterdayDate_();
+    Logger.log('[PLACEMENTS] Fetching for: ' + yesterday);
+
+    var gaql =
+      'SELECT ' +
+      '  detail_placement_view.display_name, ' +
+      '  detail_placement_view.placement, ' +
+      '  detail_placement_view.placement_type, ' +
+      '  campaign.name, ' +
+      '  ad_group.name, ' +
+      '  metrics.impressions, ' +
+      '  metrics.clicks, ' +
+      '  metrics.cost_micros, ' +
+      '  metrics.conversions ' +
+      'FROM detail_placement_view ' +
+      'WHERE segments.date = \'' + yesterday + '\' ' +
+      'AND metrics.impressions > 0';
+
+    var rows  = AdsApp.search(gaql);
+    var batch = [];
+    var total = 0;
+
+    while (rows.hasNext()) {
+      var row           = rows.next();
+      var dpv           = row.detailPlacementView || {};
+      var placement     = dpv.placement      || '';
+      var displayName   = dpv.displayName    || placement;
+      var placementType = dpv.placementType  || '';
+      var campaignName  = (row.campaign && row.campaign.name) || '';
+      var adGroupName   = (row.adGroup  && row.adGroup.name)  || '';
+      var impressions   = parseInt((row.metrics && row.metrics.impressions) || 0, 10);
+      var clicks        = parseInt((row.metrics && row.metrics.clicks)      || 0, 10);
+      var costMicros    = parseInt((row.metrics && row.metrics.costMicros)  || 0, 10);
+      var conversions   = parseFloat((row.metrics && row.metrics.conversions) || 0);
+
+      batch.push({
+        account_id:     myId,
+        placement:      placement,
+        display_name:   displayName,
+        placement_type: placementType,
+        campaign_name:  campaignName,
+        ad_group_name:  adGroupName,
+        date:           yesterday,
+        impressions:    impressions,
+        clicks:         clicks,
+        cost:           costMicros / 1000000,
+        conversions:    conversions,
+        updated_at:     new Date().toISOString()
+      });
+
+      total++;
+
+      if (batch.length >= 50) {
+        apiCall_('post', '/rest/v1/' + CONFIG.TABLE_PLACEMENTS, batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
+        batch = [];
+        Logger.log('[PLACEMENTS] Batch sent: 50 rows');
+      }
+    }
+
+    if (batch.length > 0) {
+      apiCall_('post', '/rest/v1/' + CONFIG.TABLE_PLACEMENTS, batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
+      Logger.log('[PLACEMENTS] Batch sent: ' + batch.length + ' rows');
+    }
+
+    Logger.log('[PLACEMENTS] Done. Total synced: ' + total);
+  }
+
+  /* ====================== УПРАВЛЕНИЕ СТАТУСАМИ И URL ====================== */
+
+  function syncAdEditsFromRegistry_(myId, CONFIG) {
+    var edits = apiCall_('get',
+      '/rest/v1/' + CONFIG.TABLE_ADS + '?account_id=eq.' + myId + '&needs_sync=eq.true',
+      null, null, CONFIG
+    );
+
+    if (!edits || edits.length === 0) return;
+    Logger.log('[SYNC] Правок найдено: ' + edits.length);
+
+    edits.forEach(function(edit) {
+      var adIterator = AdsApp.ads().withIds([edit.ad_id]).get();
+      if (!adIterator.hasNext()) return;
+
+      var ad = adIterator.next();
+
+      if (edit.target_status === 'ENABLED') { ad.enable(); Logger.log('[STATUS] Ad ' + edit.ad_id + ' -> ENABLED'); }
+      if (edit.target_status === 'PAUSED')  { ad.pause();  Logger.log('[STATUS] Ad ' + edit.ad_id + ' -> PAUSED'); }
+
+      if (edit.edit_final_url) {
+        ad.urls().setFinalUrl(edit.edit_final_url);
+        Logger.log('[URL] Ad ' + edit.ad_id + ' -> ' + edit.edit_final_url);
+      }
+
+      patchSupabase_(CONFIG.TABLE_ADS, {
+        needs_sync:     false,
+        edit_final_url: null,
+        target_status:  null
+      }, 'ad_id=eq.' + edit.ad_id, CONFIG);
+    });
+  }
+
+  /* ====================== СТРОГАЯ БЕЗОПАСНОСТЬ ====================== */
+
+  function checkSafetyLimitsStrict_(acc, CONFIG) {
+    var todayCost  = acc.getStatsFor('TODAY').getCost();
+    var totalLimit = CONFIG.SAFETY_LIMIT + CONFIG.EXTRA_LIMIT;
+    var balance    = 0;
+
+    try {
+      var bo = AdsApp.budgetOrders().get();
+      if (bo.hasNext()) balance = bo.next().getSpendingLimit() - acc.getStatsFor('ALL_TIME').getCost();
+    } catch(e) {}
+
+    if (todayCost >= totalLimit || balance <= -totalLimit) {
+      var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').get();
+      while (campaigns.hasNext()) {
+        var camp = campaigns.next();
+        var ads  = camp.ads().get();
+        while (ads.hasNext()) { ads.next().remove(); }
+        camp.pause();
+      }
+      tgSend_('🛑 <b>CRITICAL STOP</b>\nAcc: ' + acc.getCustomerId() + '\nAds DELETED (' + totalLimit + '$).', CONFIG);
+    }
+  }
+
+  /* ====================== РЕЕСТРЫ ====================== */
+
+  function updateAccountRegistry_(acc, CONFIG) {
+    var activeBid = 0;
+    var balance   = 0;
+    try {
+      var ag = AdsApp.adGroups().withCondition('Status = ENABLED').withLimit(1).get();
+      if (ag.hasNext()) activeBid = ag.next().bidding().getCpc();
+      var bo = AdsApp.budgetOrders().get();
+      if (bo.hasNext()) balance = bo.next().getSpendingLimit() - acc.getStatsFor('ALL_TIME').getCost();
+    } catch(e) {}
+
+    apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS, {
+      uid:         acc.getCustomerId(),
+      name:        acc.getName(),
+      email:       CONFIG.EMAIL,
+      today_cost:  acc.getStatsFor('TODAY').getCost(),
+      all_cost:    acc.getStatsFor('ALL_TIME').getCost(),
+      current_cpc: activeBid,
+      balance:     balance,
+      updated_at:  new Date().toISOString()
+    }, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
+  }
+
+  function syncAdsToRegistry_(myId, CONFIG) {
+    var ads = AdsApp.ads()
+      .withCondition('CampaignType = DISPLAY')
+      .withCondition('Status IN [ENABLED, PAUSED]')
+      .get();
+
+    var batch = [];
+
+    while (ads.hasNext()) {
+      var ad           = ads.next();
+      var stats        = ad.getStatsFor('TODAY');
+      var adType       = ad.getType();
+      var headlines    = 'Display Ad';
+      var descriptions = '';
+      var policyStatus = 'UNKNOWN';
+
+      try { policyStatus = ad.getPolicyApprovalStatus(); } catch(e) {}
+
+      try {
+        if (adType === 'MULTI_ASSET_RESPONSIVE_DISPLAY_AD') {
+          var rda      = ad.asType().responsiveDisplayAd();
+          headlines    = rda.getHeadlines().map(function(h)    { return h.getText(); }).join(' | ');
+          descriptions = rda.getDescriptions().map(function(d) { return d.getText(); }).join(' | ');
+        } else {
+          headlines = (typeof ad.getName === 'function') ? ad.getName() : 'Ad #' + ad.getId();
+        }
+      } catch(e) {}
+
+      batch.push({
+        ad_id:         ad.getId().toString(),
+        account_id:    myId,
+        campaign_name: ad.getCampaign().getName(),
+        type:          adType,
+        headline:      headlines.split(' | ')[0],
+        headlines:     headlines,
+        descriptions:  descriptions,
+        final_url:     ad.urls().getFinalUrl() || '',
+        clicks:        stats.getClicks(),
+        cost:          stats.getCost(),
+        status:        ad.isPaused() ? 'PAUSED' : 'ENABLED',
+        policy_status: policyStatus,
+        updated_at:    new Date().toISOString()
+      });
+
+      if (batch.length >= 50) {
+        apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ADS, batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
+        batch = [];
+      }
+    }
+
+    if (batch.length > 0) {
+      apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ADS, batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
+    }
+  }
+
+  /* ====================== API CORE ====================== */
+
+  function apiCall_(method, endpoint, payload, headersExtra, CONFIG) {
+    var url     = CONFIG.SUPABASE_URL + endpoint;
+    var key     = CONFIG.SUPABASE_KEY.replace(/\s/g, '');
+    var headers = {
+      'apikey':        key,
+      'Authorization': 'Bearer ' + key,
+      'Content-Type':  'application/json'
+    };
+    if (headersExtra) { for (var h in headersExtra) { headers[h] = headersExtra[h]; } }
+
+    var res = UrlFetchApp.fetch(url, {
+      method:             method,
+      headers:            headers,
+      payload:            payload ? JSON.stringify(payload) : null,
+      muteHttpExceptions: true
+    });
+
+    return (method === 'get' && res.getResponseCode() === 200)
+      ? JSON.parse(res.getContentText())
+      : null;
+  }
+
+  function patchSupabase_(table, data, query, CONFIG) {
+    var key = CONFIG.SUPABASE_KEY.replace(/\s/g, '');
+    UrlFetchApp.fetch(CONFIG.SUPABASE_URL + '/rest/v1/' + table + '?' + query, {
+      method:             'patch',
+      contentType:        'application/json',
+      headers:            { 'apikey': key, 'Authorization': 'Bearer ' + key },
+      payload:            JSON.stringify(data),
+      muteHttpExceptions: true
+    });
+  }
+
+  /* ====================== HELPERS ====================== */
+
+  function syncBidsFromRegistry_(myId, CONFIG) {
+    var data = apiCall_('get',
+      '/rest/v1/' + CONFIG.TABLE_ACCOUNTS + '?uid=eq.' + myId + '&select=target_cpc,needs_bid_sync',
+      null, null, CONFIG
+    );
+    if (data && data.length > 0 && data[0].needs_bid_sync) {
+      var target = data[0].target_cpc;
+      var ags    = AdsApp.adGroups().withCondition('Status = ENABLED').get();
+      while (ags.hasNext()) { ags.next().bidding().setCpc(target); }
+      apiCall_('patch', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS + '?uid=eq.' + myId, { needs_bid_sync: false }, null, CONFIG);
+    }
+  }
+
+  function getYesterdayDate_() {
+    var d    = new Date();
+    d.setDate(d.getDate() - 1);
+    var yyyy = d.getFullYear();
+    var mm   = ('0' + (d.getMonth() + 1)).slice(-2);
+    var dd   = ('0' + d.getDate()).slice(-2);
+    return yyyy + '-' + mm + '-' + dd;
+  }
+
+  function tgSend_(txt, CONFIG) {
+    try {
+      UrlFetchApp.fetch('https://api.telegram.org/bot' + CONFIG.TG_TOKEN + '/sendMessage', {
+        method:             'post',
+        contentType:        'application/json',
+        payload:            JSON.stringify({ chat_id: CONFIG.TG_CHAT_ID, text: txt, parse_mode: 'HTML' }),
+        muteHttpExceptions: true
+      });
+    } catch(e) {}
+  }
+
+  function logDivider_(l) { Logger.log('=== ' + l + ' ==='); }
+
+} // конец runMain()
