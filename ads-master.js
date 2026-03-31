@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.27 - Removed Placement Stats Sync)
+ * Google Ads Master Script (v15.28 - Removed Telegram & Cleanup)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -10,9 +10,6 @@ function runMain(ACCOUNT_CONFIG) {
 
     TABLE_ACCOUNTS:   'account_registry',
     TABLE_ADS:        'display_ads_registry',
-
-    TG_TOKEN:   '5203374800:AAGZ6T72DxmjVnqbza92O0y2SJyk2lw0Pr4',
-    TG_CHAT_ID: 37742949,
 
     CONVERSION_NAME: 'Offline_Sale',
 
@@ -43,10 +40,7 @@ function runMain(ACCOUNT_CONFIG) {
   try { syncAdsToRegistry_(myId, CONFIG); }        catch (e) { Logger.log('[ERR][SYNC_ADS] ' + e); }
 
   // 5. Создание объявлений
-  try { createAdFromRegistry_(myId, CONFIG); }     catch (e) {
-    Logger.log('[ERR][CREATE_AD] ' + e);
-    tgSend_('❌ <b>Create Ad — ОШИБКА</b>\nАкк: <code>' + myId + '</code>\n' + e, CONFIG);
-  }
+  try { createAdFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][CREATE_AD] ' + e); }
 
   // 6. Заливка конверсий
   try { uploadConversionsFromEdge_(myId, CONFIG); } catch (e) { Logger.log('[ERR][CONVERSIONS] ' + e); }
@@ -211,7 +205,6 @@ function runMain(ACCOUNT_CONFIG) {
       upload.apply();
       Logger.log('[CONVERSIONS] Отправлено: ' + uploadedIds.length);
       UrlFetchApp.fetch(CONFIG.SUPABASE_URL + '/functions/v1/fetch-postbacks', { method: 'post', headers: headers, payload: JSON.stringify({ ids: uploadedIds }), muteHttpExceptions: true });
-      tgSend_('✅ <b>Заливка конверсий</b>\nАкк: <code>' + myId + '</code>\nОтправлено: ' + uploadedIds.length, CONFIG);
     }
   }
 
@@ -256,8 +249,6 @@ function runMain(ACCOUNT_CONFIG) {
         createdCount++;
       } catch(e) { lines.push('⚠️ Ошибка: ' + e.message); }
     });
-
-    if (lines.length > 0) tgSend_('✅ <b>Create Ads</b>\nАкк: <code>' + myId + '</code>\nУспешно создано: ' + createdCount + '\n\n' + lines.join('\n'), CONFIG);
   }
 
   /* ====================== РЕЕСТРЫ И СИНХРОНИЗАЦИЯ ====================== */
@@ -361,6 +352,30 @@ function runMain(ACCOUNT_CONFIG) {
     });
   }
 
+  /* ====================== СТРОГАЯ БЕЗОПАСНОСТЬ ====================== */
+
+  function checkSafetyLimitsStrict_(acc, CONFIG) {
+    var todayCost  = acc.getStatsFor('TODAY').getCost();
+    var totalLimit = CONFIG.SAFETY_LIMIT + CONFIG.EXTRA_LIMIT;
+    var balance    = 0;
+
+    try {
+      var bo = AdsApp.budgetOrders().get();
+      if (bo.hasNext()) balance = bo.next().getSpendingLimit() - acc.getStatsFor('ALL_TIME').getCost();
+    } catch(e) {}
+
+    if (todayCost >= totalLimit || balance <= -totalLimit) {
+      var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').get();
+      while (campaigns.hasNext()) {
+        var camp = campaigns.next();
+        var ads  = camp.ads().get();
+        while (ads.hasNext()) { ads.next().remove(); }
+        camp.pause();
+      }
+      Logger.log('🛑 [CRITICAL STOP] Acc: ' + acc.getCustomerId() + ' | Ads DELETED (' + totalLimit + '$).');
+    }
+  }
+
   /* ====================== API CORE ====================== */
 
   function apiCall_(method, endpoint, payload, headersExtra, CONFIG) {
@@ -382,10 +397,6 @@ function runMain(ACCOUNT_CONFIG) {
       method: 'patch', contentType: 'application/json', headers: { 'apikey': key, 'Authorization': 'Bearer ' + key },
       payload: JSON.stringify(data), muteHttpExceptions: true
     });
-  }
-
-  function tgSend_(txt, CONFIG) {
-    try { UrlFetchApp.fetch('https://api.telegram.org/bot' + CONFIG.TG_TOKEN + '/sendMessage', { method: 'post', contentType: 'application/json', payload: JSON.stringify({ chat_id: CONFIG.TG_CHAT_ID, text: txt, parse_mode: 'HTML' }), muteHttpExceptions: true }); } catch(e) {}
   }
 
   function logDivider_(l) { Logger.log('=== ' + l + ' ==='); }
