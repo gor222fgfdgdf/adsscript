@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.25 - Sync & Registry Debug)
+ * Google Ads Master Script (v15.27 - Removed Placement Stats Sync)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -10,17 +10,15 @@ function runMain(ACCOUNT_CONFIG) {
 
     TABLE_ACCOUNTS:   'account_registry',
     TABLE_ADS:        'display_ads_registry',
-    TABLE_PLACEMENTS: 'placement_stats',
 
     TG_TOKEN:   '5203374800:AAGZ6T72DxmjVnqbza92O0y2SJyk2lw0Pr4',
     TG_CHAT_ID: 37742949,
 
     CONVERSION_NAME: 'Offline_Sale',
 
-    SAFETY_LIMIT:            (ACCOUNT_CONFIG && ACCOUNT_CONFIG.SAFETY_LIMIT             != null) ? ACCOUNT_CONFIG.SAFETY_LIMIT             : 45,
-    EXTRA_LIMIT:             (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EXTRA_LIMIT              != null) ? ACCOUNT_CONFIG.EXTRA_LIMIT              : 0,
-    PLACEMENT_SYNC_HOUR_UTC: (ACCOUNT_CONFIG && ACCOUNT_CONFIG.PLACEMENT_SYNC_HOUR_UTC != null) ? ACCOUNT_CONFIG.PLACEMENT_SYNC_HOUR_UTC : 10,
-    EMAIL:                   (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EMAIL                           ) ? ACCOUNT_CONFIG.EMAIL                    : ''
+    SAFETY_LIMIT:            (ACCOUNT_CONFIG && ACCOUNT_CONFIG.SAFETY_LIMIT != null) ? ACCOUNT_CONFIG.SAFETY_LIMIT : 45,
+    EXTRA_LIMIT:             (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EXTRA_LIMIT  != null) ? ACCOUNT_CONFIG.EXTRA_LIMIT  : 0,
+    EMAIL:                   (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EMAIL               ) ? ACCOUNT_CONFIG.EMAIL        : ''
   };
 
   Logger.log('[CONFIG] SAFETY_LIMIT=' + CONFIG.SAFETY_LIMIT + ' EXTRA_LIMIT=' + CONFIG.EXTRA_LIMIT);
@@ -30,23 +28,31 @@ function runMain(ACCOUNT_CONFIG) {
 
   logDivider_('START');
 
+  // 1. Критическая безопасность
   try { checkSafetyLimitsStrict_(acc, CONFIG); }   catch (e) { Logger.log('[ERR][SAFETY] ' + e); }
+  
+  // 2. Настройка новых аккаунтов (отрабатывает быстро)
   try { maybeCreateDefaultAdGroup_(); }            catch (e) { Logger.log('[ERR][SETUP_AG] ' + e); }
 
+  // 3. Быстрые синхронизации из БД в Google Ads
   try { syncBidsFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][BIDS] ' + e); }
   try { syncAdEditsFromRegistry_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][AD_EDITS] ' + e); }
   
+  // 4. Важные выгрузки статистики из Google Ads в БД
+  try { updateAccountRegistry_(acc, CONFIG); }     catch (e) { Logger.log('[ERR][REGISTRY] ' + e); }
+  try { syncAdsToRegistry_(myId, CONFIG); }        catch (e) { Logger.log('[ERR][SYNC_ADS] ' + e); }
+
+  // 5. Создание объявлений
   try { createAdFromRegistry_(myId, CONFIG); }     catch (e) {
     Logger.log('[ERR][CREATE_AD] ' + e);
     tgSend_('❌ <b>Create Ad — ОШИБКА</b>\nАкк: <code>' + myId + '</code>\n' + e, CONFIG);
   }
 
+  // 6. Заливка конверсий
   try { uploadConversionsFromEdge_(myId, CONFIG); } catch (e) { Logger.log('[ERR][CONVERSIONS] ' + e); }
-  try { syncPlacementBlacklist_(myId, CONFIG); }    catch (e) { Logger.log('[ERR][BLACKLIST] ' + e); }
 
-  try { updateAccountRegistry_(acc, CONFIG); }      catch (e) { Logger.log('[ERR][REGISTRY] ' + e); }
-  try { syncAdsToRegistry_(myId, CONFIG); }         catch (e) { Logger.log('[ERR][SYNC_ADS] ' + e); }
-  try { maybeSyncPlacementStats_(myId, CONFIG); }   catch (e) { Logger.log('[ERR][PLACEMENTS] ' + e); }
+  // 7. Работа с исключениями площадок (Самая тяжелая задача вынесена в самый конец)
+  try { syncPlacementBlacklist_(myId, CONFIG); }    catch (e) { Logger.log('[ERR][BLACKLIST] ' + e); }
 
   logDivider_('END');
 
@@ -355,43 +361,6 @@ function runMain(ACCOUNT_CONFIG) {
     });
   }
 
-  /* ====================== PLACEMENT ====================== */
-
-  function maybeSyncPlacementStats_(myId, CONFIG) {
-    var cleanId = myId.replace(/-/g, '');
-    var currentHourUTC = new Date().getUTCHours();
-    var yesterday = getYesterdayDate_();
-
-    if (currentHourUTC !== CONFIG.PLACEMENT_SYNC_HOUR_UTC) return;
-
-    Logger.log('[PLACEMENTS] Проверка синхронизации статистики площадок за ' + yesterday);
-    var check = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_PLACEMENTS + '?account_id=eq.' + cleanId + '&date=eq.' + yesterday + '&limit=1', null, null, CONFIG);
-    if (check && check.length > 0) {
-      Logger.log('[PLACEMENTS] Статистика уже выгружена.');
-      return;
-    }
-
-    Logger.log('[PLACEMENTS] Начинаем выгрузку...');
-    var gaql = 'SELECT detail_placement_view.placement, detail_placement_view.placement_type, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions FROM detail_placement_view WHERE segments.date = \'' + yesterday + '\' AND metrics.impressions > 0';
-
-    var rows = AdsApp.search(gaql);
-    var batch = [];
-    while (rows.hasNext()) {
-      var row = rows.next();
-      batch.push({
-        account_id: cleanId, placement: (row.detailPlacementView || {}).placement || '',
-        placement_type: (row.detailPlacementView || {}).placementType || '',
-        date: yesterday, impressions: parseInt((row.metrics && row.metrics.impressions) || 0, 10),
-        clicks: parseInt((row.metrics && row.metrics.clicks) || 0, 10),
-        cost: parseInt((row.metrics && row.metrics.costMicros) || 0, 10) / 1000000,
-        conversions: parseFloat((row.metrics && row.metrics.conversions) || 0)
-      });
-      if (batch.length >= 50) { apiCall_('post', '/rest/v1/' + CONFIG.TABLE_PLACEMENTS, batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG); batch = []; }
-    }
-    if (batch.length > 0) apiCall_('post', '/rest/v1/' + CONFIG.TABLE_PLACEMENTS, batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
-    Logger.log('[PLACEMENTS] Выгрузка завершена.');
-  }
-
   /* ====================== API CORE ====================== */
 
   function apiCall_(method, endpoint, payload, headersExtra, CONFIG) {
@@ -413,11 +382,6 @@ function runMain(ACCOUNT_CONFIG) {
       method: 'patch', contentType: 'application/json', headers: { 'apikey': key, 'Authorization': 'Bearer ' + key },
       payload: JSON.stringify(data), muteHttpExceptions: true
     });
-  }
-
-  function getYesterdayDate_() {
-    var d = new Date(); d.setDate(d.getDate() - 1);
-    return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
   }
 
   function tgSend_(txt, CONFIG) {
