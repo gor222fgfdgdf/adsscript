@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.28 - API Request Debugging)
+ * Google Ads Master Script (v15.29 - Multi-AdGroup Ad Creation)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -223,26 +223,37 @@ function runMain(ACCOUNT_CONFIG) {
     tasks.forEach(function(task) {
       try {
         var agIterator = AdsApp.adGroups().withCondition('Status = ENABLED').withCondition('CampaignType = DISPLAY').get();
-        if (!agIterator.hasNext()) return;
+        if (!agIterator.hasNext()) {
+          Logger.log('[CREATE_AD] Нет активных групп объявлений КМС.');
+          return;
+        }
 
-        var adGroup = agIterator.next();
+        Logger.log('[CREATE_AD] Обработка задания ID: ' + task.ad_id + '. Загрузка ассетов...');
+        
         var sqBlob = UrlFetchApp.fetch(task.square_image_url || task.img_square || 'https://example.com/1x1.jpg').getBlob();
         var sqAsset = AdsApp.adAssets().newImageAssetBuilder().withData(sqBlob).withName('Sq_' + (task.ad_id || 'new').substring(0, 15)).build().getResult();
 
         var rBlob = UrlFetchApp.fetch(task.rectangle_image_url || task.img_rect || 'https://example.com/1.91x1.jpg').getBlob();
         var rAsset = AdsApp.adAssets().newImageAssetBuilder().withData(rBlob).withName('Rect_' + (task.ad_id || 'new').substring(0, 15)).build().getResult();
 
-        adGroup.newAd().responsiveDisplayAdBuilder()
-          .withBusinessName(task.business_name || 'My Business')
-          .withFinalUrl(task.final_url || 'https://example.com')
-          .addHeadline(task.headline || 'Заголовок')
-          .withLongHeadline(task.long_headline || 'Длинный заголовок объявления')
-          .addDescription(task.description || 'Описание')
-          .addSquareMarketingImage(sqAsset)
-          .addMarketingImage(rAsset)
-          .build();
+        var groupCount = 0;
 
-        lines.push('📌 Создано: <b>' + (task.headline || 'Заголовок') + '</b>');
+        while (agIterator.hasNext()) {
+          var adGroup = agIterator.next();
+          adGroup.newAd().responsiveDisplayAdBuilder()
+            .withBusinessName(task.business_name || 'My Business')
+            .withFinalUrl(task.final_url || 'https://example.com')
+            .addHeadline(task.headline || 'Заголовок')
+            .withLongHeadline(task.long_headline || 'Длинный заголовок объявления')
+            .addDescription(task.description || 'Описание')
+            .addSquareMarketingImage(sqAsset)
+            .addMarketingImage(rAsset)
+            .build();
+          groupCount++;
+        }
+
+        Logger.log('[CREATE_AD] Объявление создано в ' + groupCount + ' группах.');
+        lines.push('📌 Создано: <b>' + (task.headline || 'Заголовок') + '</b> (Групп: ' + groupCount + ')');
         patchSupabase_(CONFIG.TABLE_ADS, { needs_create: false }, 'ad_id=eq.' + task.ad_id, CONFIG);
         createdCount++;
       } catch(e) { lines.push('⚠️ Ошибка: ' + e.message); }
@@ -299,14 +310,14 @@ function runMain(ACCOUNT_CONFIG) {
       });
 
       if (batch.length >= 50) { 
-        Logger.log('[SYNC_ADS] Отправка батча объявлений (50шт): ' + JSON.stringify(batch));
+        Logger.log('[SYNC_ADS] Отправка батча объявлений (50шт)');
         apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ADS, batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG); 
         totalAdsSynced += batch.length;
         batch = []; 
       }
     }
     if (batch.length > 0) {
-      Logger.log('[SYNC_ADS] Отправка остатка объявлений (' + batch.length + 'шт): ' + JSON.stringify(batch));
+      Logger.log('[SYNC_ADS] Отправка остатка объявлений (' + batch.length + 'шт)');
       apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ADS, batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
       totalAdsSynced += batch.length;
     }
