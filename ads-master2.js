@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.28 - Removed Telegram & Cleanup)
+ * Google Ads Master Script (v15.28 - API Request Debugging)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -10,6 +10,9 @@ function runMain(ACCOUNT_CONFIG) {
 
     TABLE_ACCOUNTS:   'account_registry',
     TABLE_ADS:        'display_ads_registry',
+
+    TG_TOKEN:   '5203374800:AAGZ6T72DxmjVnqbza92O0y2SJyk2lw0Pr4',
+    TG_CHAT_ID: 37742949,
 
     CONVERSION_NAME: 'Offline_Sale',
 
@@ -25,27 +28,21 @@ function runMain(ACCOUNT_CONFIG) {
 
   logDivider_('START');
 
-  // 1. Критическая безопасность
   try { checkSafetyLimitsStrict_(acc, CONFIG); }   catch (e) { Logger.log('[ERR][SAFETY] ' + e); }
-  
-  // 2. Настройка новых аккаунтов (отрабатывает быстро)
   try { maybeCreateDefaultAdGroup_(); }            catch (e) { Logger.log('[ERR][SETUP_AG] ' + e); }
 
-  // 3. Быстрые синхронизации из БД в Google Ads
   try { syncBidsFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][BIDS] ' + e); }
   try { syncAdEditsFromRegistry_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][AD_EDITS] ' + e); }
   
-  // 4. Важные выгрузки статистики из Google Ads в БД
   try { updateAccountRegistry_(acc, CONFIG); }     catch (e) { Logger.log('[ERR][REGISTRY] ' + e); }
   try { syncAdsToRegistry_(myId, CONFIG); }        catch (e) { Logger.log('[ERR][SYNC_ADS] ' + e); }
 
-  // 5. Создание объявлений
-  try { createAdFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][CREATE_AD] ' + e); }
+  try { createAdFromRegistry_(myId, CONFIG); }     catch (e) {
+    Logger.log('[ERR][CREATE_AD] ' + e);
+    tgSend_('❌ <b>Create Ad — ОШИБКА</b>\nАкк: <code>' + myId + '</code>\n' + e, CONFIG);
+  }
 
-  // 6. Заливка конверсий
   try { uploadConversionsFromEdge_(myId, CONFIG); } catch (e) { Logger.log('[ERR][CONVERSIONS] ' + e); }
-
-  // 7. Работа с исключениями площадок (Самая тяжелая задача вынесена в самый конец)
   try { syncPlacementBlacklist_(myId, CONFIG); }    catch (e) { Logger.log('[ERR][BLACKLIST] ' + e); }
 
   logDivider_('END');
@@ -205,6 +202,7 @@ function runMain(ACCOUNT_CONFIG) {
       upload.apply();
       Logger.log('[CONVERSIONS] Отправлено: ' + uploadedIds.length);
       UrlFetchApp.fetch(CONFIG.SUPABASE_URL + '/functions/v1/fetch-postbacks', { method: 'post', headers: headers, payload: JSON.stringify({ ids: uploadedIds }), muteHttpExceptions: true });
+      tgSend_('✅ <b>Заливка конверсий</b>\nАкк: <code>' + myId + '</code>\nОтправлено: ' + uploadedIds.length, CONFIG);
     }
   }
 
@@ -249,6 +247,8 @@ function runMain(ACCOUNT_CONFIG) {
         createdCount++;
       } catch(e) { lines.push('⚠️ Ошибка: ' + e.message); }
     });
+
+    if (lines.length > 0) tgSend_('✅ <b>Create Ads</b>\nАкк: <code>' + myId + '</code>\nУспешно создано: ' + createdCount + '\n\n' + lines.join('\n'), CONFIG);
   }
 
   /* ====================== РЕЕСТРЫ И СИНХРОНИЗАЦИЯ ====================== */
@@ -271,8 +271,9 @@ function runMain(ACCOUNT_CONFIG) {
       current_cpc: activeBid, balance: balance, updated_at: new Date().toISOString()
     };
     
-    var res = apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS, payload, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
-    Logger.log('[REGISTRY] Данные отправлены.');
+    Logger.log('[REGISTRY] Payload для таблицы accounts: ' + JSON.stringify(payload));
+    apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS, payload, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
+    Logger.log('[REGISTRY] Синхронизация аккаунта завершена.');
   }
 
   function syncAdsToRegistry_(myId, CONFIG) {
@@ -280,6 +281,7 @@ function runMain(ACCOUNT_CONFIG) {
     Logger.log('[SYNC_ADS] Синхронизация статусов объявлений...');
     var ads = AdsApp.ads().withCondition('CampaignType = DISPLAY').withCondition('Status IN [ENABLED, PAUSED]').get();
     var batch = [];
+    var totalAdsSynced = 0;
 
     while (ads.hasNext()) {
       var ad = ads.next();
@@ -297,12 +299,18 @@ function runMain(ACCOUNT_CONFIG) {
       });
 
       if (batch.length >= 50) { 
+        Logger.log('[SYNC_ADS] Отправка батча объявлений (50шт): ' + JSON.stringify(batch));
         apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ADS, batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG); 
+        totalAdsSynced += batch.length;
         batch = []; 
       }
     }
-    if (batch.length > 0) apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ADS, batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
-    Logger.log('[SYNC_ADS] Готово.');
+    if (batch.length > 0) {
+      Logger.log('[SYNC_ADS] Отправка остатка объявлений (' + batch.length + 'шт): ' + JSON.stringify(batch));
+      apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ADS, batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
+      totalAdsSynced += batch.length;
+    }
+    Logger.log('[SYNC_ADS] Готово. Всего синхронизировано объявлений: ' + totalAdsSynced);
   }
 
   function syncBidsFromRegistry_(myId, CONFIG) {
@@ -352,30 +360,6 @@ function runMain(ACCOUNT_CONFIG) {
     });
   }
 
-  /* ====================== СТРОГАЯ БЕЗОПАСНОСТЬ ====================== */
-
-  function checkSafetyLimitsStrict_(acc, CONFIG) {
-    var todayCost  = acc.getStatsFor('TODAY').getCost();
-    var totalLimit = CONFIG.SAFETY_LIMIT + CONFIG.EXTRA_LIMIT;
-    var balance    = 0;
-
-    try {
-      var bo = AdsApp.budgetOrders().get();
-      if (bo.hasNext()) balance = bo.next().getSpendingLimit() - acc.getStatsFor('ALL_TIME').getCost();
-    } catch(e) {}
-
-    if (todayCost >= totalLimit || balance <= -totalLimit) {
-      var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').get();
-      while (campaigns.hasNext()) {
-        var camp = campaigns.next();
-        var ads  = camp.ads().get();
-        while (ads.hasNext()) { ads.next().remove(); }
-        camp.pause();
-      }
-      Logger.log('🛑 [CRITICAL STOP] Acc: ' + acc.getCustomerId() + ' | Ads DELETED (' + totalLimit + '$).');
-    }
-  }
-
   /* ====================== API CORE ====================== */
 
   function apiCall_(method, endpoint, payload, headersExtra, CONFIG) {
@@ -383,20 +367,33 @@ function runMain(ACCOUNT_CONFIG) {
     var headers = { 'apikey': key, 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' };
     if (headersExtra) { for (var h in headersExtra) headers[h] = headersExtra[h]; }
 
+    Logger.log('[API_CALL] Request: ' + method.toUpperCase() + ' ' + endpoint);
+
     var res = UrlFetchApp.fetch(CONFIG.SUPABASE_URL + endpoint, { method: method, headers: headers, payload: payload ? JSON.stringify(payload) : null, muteHttpExceptions: true });
     var code = res.getResponseCode();
+    
+    Logger.log('[API_CALL] Response Code: ' + code);
+
     if (code !== 200 && code !== 201 && code !== 204) {
-      Logger.log('[API_ERROR] ' + method.toUpperCase() + ' ' + endpoint + ' | Code: ' + code + ' | Body: ' + res.getContentText());
+      Logger.log('[API_ERROR] Body: ' + res.getContentText());
     }
     return (method === 'get' && code === 200) ? JSON.parse(res.getContentText()) : null;
   }
 
   function patchSupabase_(table, data, query, CONFIG) {
     var key = CONFIG.SUPABASE_KEY.replace(/\s/g, '');
-    UrlFetchApp.fetch(CONFIG.SUPABASE_URL + '/rest/v1/' + table + '?' + query, {
+    var endpoint = '/rest/v1/' + table + '?' + query;
+    Logger.log('[PATCH] ' + endpoint + ' Payload: ' + JSON.stringify(data));
+
+    var res = UrlFetchApp.fetch(CONFIG.SUPABASE_URL + endpoint, {
       method: 'patch', contentType: 'application/json', headers: { 'apikey': key, 'Authorization': 'Bearer ' + key },
       payload: JSON.stringify(data), muteHttpExceptions: true
     });
+    Logger.log('[PATCH] Response Code: ' + res.getResponseCode());
+  }
+
+  function tgSend_(txt, CONFIG) {
+    try { UrlFetchApp.fetch('https://api.telegram.org/bot' + CONFIG.TG_TOKEN + '/sendMessage', { method: 'post', contentType: 'application/json', payload: JSON.stringify({ chat_id: CONFIG.TG_CHAT_ID, text: txt, parse_mode: 'HTML' }), muteHttpExceptions: true }); } catch(e) {}
   }
 
   function logDivider_(l) { Logger.log('=== ' + l + ' ==='); }
