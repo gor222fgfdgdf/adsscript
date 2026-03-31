@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.30 - Policy Disapproval Reasons)
+ * Google Ads Master Script (v15.31 - Fix Missing Function & Creation Logging)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -230,11 +230,19 @@ function runMain(ACCOUNT_CONFIG) {
 
         Logger.log('[CREATE_AD] Обработка задания ID: ' + task.ad_id + '. Загрузка ассетов...');
         
+        var ts = new Date().getTime().toString().substring(7); // Уникальная метка для имени картинки
+        
         var sqBlob = UrlFetchApp.fetch(task.square_image_url || task.img_square || 'https://example.com/1x1.jpg').getBlob();
-        var sqAsset = AdsApp.adAssets().newImageAssetBuilder().withData(sqBlob).withName('Sq_' + (task.ad_id || 'new').substring(0, 15)).build().getResult();
+        var sqAsset = AdsApp.adAssets().newImageAssetBuilder()
+          .withData(sqBlob)
+          .withName('Sq_' + (task.ad_id || 'new').substring(0, 10) + '_' + ts)
+          .build().getResult();
 
         var rBlob = UrlFetchApp.fetch(task.rectangle_image_url || task.img_rect || 'https://example.com/1.91x1.jpg').getBlob();
-        var rAsset = AdsApp.adAssets().newImageAssetBuilder().withData(rBlob).withName('Rect_' + (task.ad_id || 'new').substring(0, 15)).build().getResult();
+        var rAsset = AdsApp.adAssets().newImageAssetBuilder()
+          .withData(rBlob)
+          .withName('Rect_' + (task.ad_id || 'new').substring(0, 10) + '_' + ts)
+          .build().getResult();
 
         var groupCount = 0;
 
@@ -256,7 +264,10 @@ function runMain(ACCOUNT_CONFIG) {
         lines.push('📌 Создано: <b>' + (task.headline || 'Заголовок') + '</b> (Групп: ' + groupCount + ')');
         patchSupabase_(CONFIG.TABLE_ADS, { needs_create: false }, 'ad_id=eq.' + task.ad_id, CONFIG);
         createdCount++;
-      } catch(e) { lines.push('⚠️ Ошибка: ' + e.message); }
+      } catch(e) { 
+        Logger.log('[CREATE_AD] ⚠️ Ошибка для задания ' + task.ad_id + ': ' + e.message);
+        lines.push('⚠️ Ошибка (' + task.headline + '): ' + e.message); 
+      }
     });
 
     if (lines.length > 0) tgSend_('✅ <b>Create Ads</b>\nАкк: <code>' + myId + '</code>\nУспешно создано: ' + createdCount + '\n\n' + lines.join('\n'), CONFIG);
@@ -383,6 +394,28 @@ function runMain(ACCOUNT_CONFIG) {
 
       patchSupabase_(CONFIG.TABLE_ADS, { needs_sync: false, edit_final_url: null, target_status: null }, 'ad_id=eq.' + edit.ad_id, CONFIG);
     });
+  }
+
+  function checkSafetyLimitsStrict_(acc, CONFIG) {
+    var todayCost  = acc.getStatsFor('TODAY').getCost();
+    var totalLimit = CONFIG.SAFETY_LIMIT + CONFIG.EXTRA_LIMIT;
+    var balance    = 0;
+
+    try {
+      var bo = AdsApp.budgetOrders().get();
+      if (bo.hasNext()) balance = bo.next().getSpendingLimit() - acc.getStatsFor('ALL_TIME').getCost();
+    } catch(e) {}
+
+    if (todayCost >= totalLimit || (balance !== 0 && balance <= -totalLimit)) {
+      var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').get();
+      while (campaigns.hasNext()) {
+        var camp = campaigns.next();
+        var ads  = camp.ads().get();
+        while (ads.hasNext()) { ads.next().remove(); }
+        camp.pause();
+      }
+      tgSend_('🛑 <b>CRITICAL STOP</b>\nAcc: ' + acc.getCustomerId() + '\nAds DELETED (' + totalLimit + '$).', CONFIG);
+    }
   }
 
   /* ====================== API CORE ====================== */
