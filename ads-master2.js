@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.29 - Multi-AdGroup Ad Creation)
+ * Google Ads Master Script (v15.30 - Policy Disapproval Reasons)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -298,9 +298,23 @@ function runMain(ACCOUNT_CONFIG) {
       var ad = ads.next();
       var stats = ad.getStatsFor('TODAY');
       var headlines = (typeof ad.getName === 'function') ? ad.getName() : 'Ad #' + ad.getId();
+      
       var policyStatus = 'UNKNOWN';
-
-      try { policyStatus = ad.getPolicyApprovalStatus(); } catch(e) {}
+      try { 
+        policyStatus = ad.getPolicyApprovalStatus(); 
+        if (policyStatus === 'DISAPPROVED' || policyStatus === 'APPROVED_LIMITED') {
+          var topics = ad.getPolicyTopics();
+          if (topics && topics.length > 0) {
+            var reasons = [];
+            for (var t = 0; t < topics.length; t++) {
+              reasons.push(topics[t].getName());
+            }
+            if (reasons.length > 0) {
+              policyStatus += ' (' + reasons.join(', ') + ')';
+            }
+          }
+        }
+      } catch(e) {}
 
       batch.push({
         ad_id: ad.getId().toString(), account_id: cleanId, campaign_name: ad.getCampaign().getName(),
