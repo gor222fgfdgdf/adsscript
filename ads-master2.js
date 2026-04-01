@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.34 - Multi-Asset Responsive Ads)
+ * Google Ads Master Script (v15.35 - Ad Creation Detailed Logging & Error Catching)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -234,13 +234,12 @@ function runMain(ACCOUNT_CONFIG) {
           return;
         }
 
-        Logger.log('[CREATE_AD] Обработка задания ID: ' + task.ad_id + '. Загрузка ассетов...');
+        Logger.log('[CREATE_AD] Обработка задания ID: ' + task.ad_id);
         
         var ts = new Date().getTime().toString().substring(7);
         var loadedSqAssets = [];
         var loadedRectAssets = [];
 
-        // Обработка массива квадратных картинок (или фолбэк на одиночную)
         var sqUrls = task.square_image_urls || [task.square_image_url || task.img_square || 'https://example.com/1x1.jpg'];
         sqUrls.forEach(function(url, idx) {
           if (!url) return;
@@ -251,10 +250,9 @@ function runMain(ACCOUNT_CONFIG) {
               .withName('Sq_' + (task.ad_id || 'new').substring(0, 8) + '_' + ts + '_' + idx)
               .build().getResult();
             loadedSqAssets.push(asset);
-          } catch(e) { Logger.log('[CREATE_AD] Ошибка загрузки кв. картинки: ' + e.message); }
+          } catch(e) { Logger.log('[CREATE_AD] ⚠️ Ошибка загрузки кв. картинки: ' + e.message); }
         });
 
-        // Обработка массива прямоугольных картинок (или фолбэк на одиночную)
         var rectUrls = task.landscape_image_urls || [task.rectangle_image_url || task.img_rect || 'https://example.com/1.91x1.jpg'];
         rectUrls.forEach(function(url, idx) {
           if (!url) return;
@@ -265,44 +263,57 @@ function runMain(ACCOUNT_CONFIG) {
               .withName('Rect_' + (task.ad_id || 'new').substring(0, 8) + '_' + ts + '_' + idx)
               .build().getResult();
             loadedRectAssets.push(asset);
-          } catch(e) { Logger.log('[CREATE_AD] Ошибка загрузки гор. картинки: ' + e.message); }
+          } catch(e) { Logger.log('[CREATE_AD] ⚠️ Ошибка загрузки гор. картинки: ' + e.message); }
         });
 
         var groupCount = 0;
+        var hCount = 0;
+        var dCount = 0;
 
         while (agIterator.hasNext()) {
           var adGroup = agIterator.next();
+          Logger.log('[CREATE_AD] Создание в группе: ' + adGroup.getName());
+          
           var adBuilder = adGroup.newAd().responsiveDisplayAdBuilder()
             .withBusinessName(task.business_name || 'My Business')
             .withFinalUrl(task.final_url || 'https://example.com')
             .withLongHeadline(task.long_headline || 'Длинный заголовок');
 
-          // Заголовки (до 5)
+          hCount = 0;
           var headlinesList = task.headlines || [task.headline || 'Заголовок'];
           for (var h = 0; h < Math.min(headlinesList.length, 5); h++) {
-            if (headlinesList[h]) adBuilder.addHeadline(headlinesList[h]);
+            if (headlinesList[h]) { adBuilder.addHeadline(headlinesList[h]); hCount++; }
           }
 
-          // Описания (до 5)
+          dCount = 0;
           var descList = task.descriptions || [task.description || 'Описание'];
           for (var d = 0; d < Math.min(descList.length, 5); d++) {
-            if (descList[d]) adBuilder.addDescription(descList[d]);
+            if (descList[d]) { adBuilder.addDescription(descList[d]); dCount++; }
           }
 
-          // Добавление загруженных ассетов
           loadedSqAssets.forEach(function(asset) { adBuilder.addSquareMarketingImage(asset); });
           loadedRectAssets.forEach(function(asset) { adBuilder.addMarketingImage(asset); });
 
-          adBuilder.build();
-          groupCount++;
+          Logger.log('[CREATE_AD] Параметры: Заг: ' + hCount + ', Опис: ' + dCount + ', Кв.Карт: ' + loadedSqAssets.length + ', Гор.Карт: ' + loadedRectAssets.length);
+
+          var adOperation = adBuilder.build();
+          
+          if (!adOperation.isSuccessful()) {
+             var errors = adOperation.getErrors();
+             Logger.log('[CREATE_AD] ❌ ОШИБКА АПИ GOOGLE ADS: ' + errors.join(', '));
+             throw new Error("API Google Ads отклонил объявление: " + errors[0]);
+          } else {
+             var newAd = adOperation.getResult();
+             Logger.log('[CREATE_AD] ✅ Объявление создано. ID: ' + newAd.getId());
+             groupCount++;
+          }
         }
 
-        Logger.log('[CREATE_AD] Объявление создано в ' + groupCount + ' группах. Картинок: ' + (loadedSqAssets.length + loadedRectAssets.length));
         lines.push('📌 Создано многоассетное объявление (Групп: ' + groupCount + ')');
         patchSupabase_(CONFIG.TABLE_ADS, { needs_create: false }, 'ad_id=eq.' + task.ad_id, CONFIG);
         createdCount++;
       } catch(e) { 
-        Logger.log('[CREATE_AD] ⚠️ Ошибка для задания ' + task.ad_id + ': ' + e.message);
+        Logger.log('[CREATE_AD] ⚠️ Перехвачена ошибка для задания ' + task.ad_id + ': ' + e.message);
         lines.push('⚠️ Ошибка (' + task.ad_id.substring(0,8) + '): ' + e.message); 
       }
     });
