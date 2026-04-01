@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.35 - Ad Creation Detailed Logging & Error Catching)
+ * Google Ads Master Script (v15.36 - Ad Builder Strict Validation & Sleep)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -120,10 +120,7 @@ function runMain(ACCOUNT_CONFIG) {
     var endpoint = '/rest/v1/placement_blacklist?select=placement&limit=10000';
     var data = apiCall_('get', endpoint, null, null, CONFIG);
 
-    if (!data || data.length === 0) {
-      Logger.log('[BLACKLIST] Блэклист пуст или недоступен.');
-      return;
-    }
+    if (!data || data.length === 0) return;
 
     var oldListName = 'Global Supabase Blacklist'; 
     var newListName = 'Global Supabase Blacklist V2'; 
@@ -144,13 +141,11 @@ function runMain(ACCOUNT_CONFIG) {
       excludedList = listIterator.next();
     } else {
       excludedList = AdsApp.newExcludedPlacementListBuilder().withName(newListName).build().getResult();
-      Logger.log('[BLACKLIST] Создан новый список исключений: ' + newListName);
     }
 
     var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').withCondition('CampaignType = DISPLAY').get();
-    var campCount = 0;
     while (campaigns.hasNext()) {
-      try { campaigns.next().addExcludedPlacementList(excludedList); campCount++; } catch (e) {}
+      try { campaigns.next().addExcludedPlacementList(excludedList); } catch (e) {}
     }
 
     var columns = ['Row Type', 'Action', 'Customer ID', 'Placement Exclusion List ID', 'Placement Exclusion List Name', 'Placement Exclusion'];
@@ -171,10 +166,7 @@ function runMain(ACCOUNT_CONFIG) {
       }
     });
 
-    if (addedCount > 0) {
-      upload.apply();
-      Logger.log('[BLACKLIST] Bulk Upload запущен. Площадок отправлено: ' + addedCount);
-    }
+    if (addedCount > 0) upload.apply();
   }
 
   /* ====================== OFFLINE CONVERSIONS ====================== */
@@ -208,8 +200,16 @@ function runMain(ACCOUNT_CONFIG) {
     if (uploadedIds.length > 0) {
       upload.apply();
       UrlFetchApp.fetch(CONFIG.SUPABASE_URL + '/functions/v1/fetch-postbacks', { method: 'post', headers: headers, payload: JSON.stringify({ ids: uploadedIds }), muteHttpExceptions: true });
-      tgSend_('✅ <b>Заливка конверсий</b>\nАкк: <code>' + myId + '</code>\nОтправлено: ' + uploadedIds.length, CONFIG);
     }
+  }
+
+  /* ====================== ВАЛИДАТОР ТЕКСТОВ ====================== */
+  
+  function getSafeString_(val, maxLength, fallbackVal) {
+    if (val == null || val === undefined) return fallbackVal;
+    var str = String(val).trim();
+    if (str === '') return fallbackVal;
+    return str.substring(0, maxLength);
   }
 
   /* ====================== CREATE AD ====================== */
@@ -234,13 +234,14 @@ function runMain(ACCOUNT_CONFIG) {
           return;
         }
 
-        Logger.log('[CREATE_AD] Обработка задания ID: ' + task.ad_id);
+        Logger.log('--------------------------------------------------');
+        Logger.log('[CREATE_AD] НАЧАЛО ОБРАБОТКИ ЗАДАНИЯ ID: ' + task.ad_id);
         
         var ts = new Date().getTime().toString().substring(7);
         var loadedSqAssets = [];
         var loadedRectAssets = [];
 
-        var sqUrls = task.square_image_urls || [task.square_image_url || task.img_square || 'https://example.com/1x1.jpg'];
+        var sqUrls = (task.square_image_urls && task.square_image_urls.length > 0) ? task.square_image_urls : [task.square_image_url || task.img_square || 'https://example.com/1x1.jpg'];
         sqUrls.forEach(function(url, idx) {
           if (!url) return;
           try {
@@ -253,7 +254,7 @@ function runMain(ACCOUNT_CONFIG) {
           } catch(e) { Logger.log('[CREATE_AD] ⚠️ Ошибка загрузки кв. картинки: ' + e.message); }
         });
 
-        var rectUrls = task.landscape_image_urls || [task.rectangle_image_url || task.img_rect || 'https://example.com/1.91x1.jpg'];
+        var rectUrls = (task.landscape_image_urls && task.landscape_image_urls.length > 0) ? task.landscape_image_urls : [task.rectangle_image_url || task.img_rect || 'https://example.com/1.91x1.jpg'];
         rectUrls.forEach(function(url, idx) {
           if (!url) return;
           try {
@@ -266,45 +267,59 @@ function runMain(ACCOUNT_CONFIG) {
           } catch(e) { Logger.log('[CREATE_AD] ⚠️ Ошибка загрузки гор. картинки: ' + e.message); }
         });
 
+        if (loadedSqAssets.length === 0 || loadedRectAssets.length === 0) {
+          throw new Error('Критическая ошибка: не удалось загрузить как минимум 1 квадратную и 1 прямоугольную картинку.');
+        }
+
+        Logger.log('[CREATE_AD] Ожидание 5 сек для синхронизации картинок на серверах Google...');
+        Utilities.sleep(5000);
+
         var groupCount = 0;
-        var hCount = 0;
-        var dCount = 0;
 
         while (agIterator.hasNext()) {
           var adGroup = agIterator.next();
-          Logger.log('[CREATE_AD] Создание в группе: ' + adGroup.getName());
+          Logger.log('[CREATE_AD] Собираем объявление для группы: ' + adGroup.getName());
           
-          var adBuilder = adGroup.newAd().responsiveDisplayAdBuilder()
-            .withBusinessName(task.business_name || 'My Business')
-            .withFinalUrl(task.final_url || 'https://example.com')
-            .withLongHeadline(task.long_headline || 'Длинный заголовок');
+          var bName = getSafeString_(task.business_name, 25, 'My Business');
+          var fUrl  = String(task.final_url || 'https://example.com').trim();
+          if (fUrl.indexOf('http') !== 0) fUrl = 'https://' + fUrl; // Фикс пустых протоколов
+          var lHead = getSafeString_(task.long_headline, 90, 'Длинный заголовок по умолчанию');
 
-          hCount = 0;
-          var headlinesList = task.headlines || [task.headline || 'Заголовок'];
+          Logger.log('  -> BusinessName: [' + bName + '] (' + bName.length + '/25)');
+          Logger.log('  -> FinalUrl: [' + fUrl + ']');
+          Logger.log('  -> LongHeadline: [' + lHead + '] (' + lHead.length + '/90)');
+
+          var adBuilder = adGroup.newAd().responsiveDisplayAdBuilder()
+            .withBusinessName(bName)
+            .withFinalUrl(fUrl)
+            .withLongHeadline(lHead);
+
+          var headlinesList = (task.headlines && task.headlines.length > 0) ? task.headlines : [task.headline];
           for (var h = 0; h < Math.min(headlinesList.length, 5); h++) {
-            if (headlinesList[h]) { adBuilder.addHeadline(headlinesList[h]); hCount++; }
+            var safeH = getSafeString_(headlinesList[h], 30, 'Заголовок ' + (h+1));
+            adBuilder.addHeadline(safeH);
+            Logger.log('  -> Headline ' + (h+1) + ': [' + safeH + '] (' + safeH.length + '/30)');
           }
 
-          dCount = 0;
-          var descList = task.descriptions || [task.description || 'Описание'];
+          var descList = (task.descriptions && task.descriptions.length > 0) ? task.descriptions : [task.description];
           for (var d = 0; d < Math.min(descList.length, 5); d++) {
-            if (descList[d]) { adBuilder.addDescription(descList[d]); dCount++; }
+            var safeD = getSafeString_(descList[d], 90, 'Описание ' + (d+1));
+            adBuilder.addDescription(safeD);
+            Logger.log('  -> Description ' + (d+1) + ': [' + safeD + '] (' + safeD.length + '/90)');
           }
 
           loadedSqAssets.forEach(function(asset) { adBuilder.addSquareMarketingImage(asset); });
           loadedRectAssets.forEach(function(asset) { adBuilder.addMarketingImage(asset); });
 
-          Logger.log('[CREATE_AD] Параметры: Заг: ' + hCount + ', Опис: ' + dCount + ', Кв.Карт: ' + loadedSqAssets.length + ', Гор.Карт: ' + loadedRectAssets.length);
-
+          Logger.log('[CREATE_AD] Отправка команды .build()...');
           var adOperation = adBuilder.build();
           
           if (!adOperation.isSuccessful()) {
              var errors = adOperation.getErrors();
-             Logger.log('[CREATE_AD] ❌ ОШИБКА АПИ GOOGLE ADS: ' + errors.join(', '));
-             throw new Error("API Google Ads отклонил объявление: " + errors[0]);
+             Logger.log('[CREATE_AD] ❌ ОШИБКА БИЛДЕРА: ' + errors.join(', '));
           } else {
-             var newAd = adOperation.getResult();
-             Logger.log('[CREATE_AD] ✅ Объявление создано. ID: ' + newAd.getId());
+             var newAd = adOperation.getResult(); // Если отказ на бэкенде, ошибка вылетит тут
+             Logger.log('[CREATE_AD] ✅ Успех! ID: ' + newAd.getId());
              groupCount++;
           }
         }
@@ -313,9 +328,10 @@ function runMain(ACCOUNT_CONFIG) {
         patchSupabase_(CONFIG.TABLE_ADS, { needs_create: false }, 'ad_id=eq.' + task.ad_id, CONFIG);
         createdCount++;
       } catch(e) { 
-        Logger.log('[CREATE_AD] ⚠️ Перехвачена ошибка для задания ' + task.ad_id + ': ' + e.message);
+        Logger.log('[CREATE_AD] ⚠️ КРИТИЧЕСКАЯ ОШИБКА СБОРКИ: ' + e.message);
         lines.push('⚠️ Ошибка (' + task.ad_id.substring(0,8) + '): ' + e.message); 
       }
+      Logger.log('--------------------------------------------------');
     });
 
     if (lines.length > 0) tgSend_('✅ <b>Create Ads</b>\nАкк: <code>' + myId + '</code>\nУспешно создано: ' + createdCount + '\n\n' + lines.join('\n'), CONFIG);
