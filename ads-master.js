@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.41 - Delete Ad Functionality)
+ * Google Ads Master Script (v15.42 - Fixed youtube.com Exclusion & Logging)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -123,10 +123,22 @@ function runMain(ACCOUNT_CONFIG) {
     
     while (campaigns.hasNext()) {
       var camp = campaigns.next();
+      
       if (excludedList) {
         try { camp.addExcludedPlacementList(excludedList); } catch (e) {}
       }
-      try { camp.excludePlacement('youtube.com'); } catch (e) {}
+
+      Logger.log('[BLACKLIST] Попытка исключения youtube.com для кампании: ' + camp.getName());
+      try { 
+        var excludeOp = camp.display().newPlacementBuilder().withUrl('youtube.com').exclude();
+        if (excludeOp.isSuccessful()) {
+          Logger.log('[BLACKLIST] ✅ youtube.com успешно исключен.');
+        } else {
+          Logger.log('[BLACKLIST] ❌ Ошибка API при исключении youtube.com: ' + excludeOp.getErrors().join(', '));
+        }
+      } catch (e) { 
+        Logger.log('[BLACKLIST] ⚠️ Системная ошибка при исключении youtube.com: ' + e.message);
+      }
     }
 
     if (!data || data.length === 0) return;
@@ -401,7 +413,6 @@ function runMain(ACCOUNT_CONFIG) {
 
   function syncAdEditsFromRegistry_(myId, CONFIG) {
     var cleanId = myId.replace(/-/g, '');
-    Logger.log('[AD_EDITS] Проверка изменений статусов/ссылок/удалений...');
     var edits = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ADS + '?account_id=eq.' + cleanId + '&needs_sync=eq.true', null, null, CONFIG);
     
     if (!edits || edits.length === 0) return;
@@ -422,14 +433,13 @@ function runMain(ACCOUNT_CONFIG) {
 
       if (edit.target_status === 'REMOVED') {
         ad.remove();
-        Logger.log('[AD_EDITS] 🗑️ Объявление УДАЛЕНО: ' + edit.ad_id);
         deleteSupabase_(CONFIG.TABLE_ADS, 'ad_id=eq.' + edit.ad_id, CONFIG);
         return;
       }
 
-      if (edit.target_status === 'ENABLED') { ad.enable(); Logger.log('[AD_EDITS] Включено: ' + edit.ad_id); }
-      if (edit.target_status === 'PAUSED')  { ad.pause();  Logger.log('[AD_EDITS] Остановлено: ' + edit.ad_id); }
-      if (edit.edit_final_url) { ad.urls().setFinalUrl(edit.edit_final_url); }
+      if (edit.target_status === 'ENABLED') ad.enable();
+      if (edit.target_status === 'PAUSED')  ad.pause();
+      if (edit.edit_final_url) ad.urls().setFinalUrl(edit.edit_final_url);
 
       patchSupabase_(CONFIG.TABLE_ADS, { needs_sync: false, edit_final_url: null, target_status: null }, 'ad_id=eq.' + edit.ad_id, CONFIG);
     });
