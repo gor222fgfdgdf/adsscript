@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.36 - Ad Builder Strict Validation & Sleep)
+ * Google Ads Master Script (v15.38 - Only News Topic Enforcement)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -29,7 +29,10 @@ function runMain(ACCOUNT_CONFIG) {
   logDivider_('START');
 
   try { checkSafetyLimitsStrict_(acc, CONFIG); }   catch (e) { Logger.log('[ERR][SAFETY] ' + e); }
+  
+  // Настройка групп и очистка старых тем
   try { maybeCreateDefaultAdGroup_(); }            catch (e) { Logger.log('[ERR][SETUP_AG] ' + e); }
+  try { enforceNewsTopicOnly_(); }                 catch (e) { Logger.log('[ERR][TOPIC_CLEANUP] ' + e); }
 
   try { syncBidsFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][BIDS] ' + e); }
   try { syncAdEditsFromRegistry_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][AD_EDITS] ' + e); }
@@ -47,7 +50,7 @@ function runMain(ACCOUNT_CONFIG) {
 
   logDivider_('END');
 
-  /* ====================== АВТОСОЗДАНИЕ ГРУППЫ ====================== */
+  /* ====================== АВТОСОЗДАНИЕ ГРУППЫ И ТЕМ ====================== */
 
   function maybeCreateDefaultAdGroup_() {
     var agCheck = AdsApp.adGroups().withCondition("Status != REMOVED").get();
@@ -60,13 +63,7 @@ function runMain(ACCOUNT_CONFIG) {
     var AD_GROUP_NAME = 'Topic_All';
 
     var TOPICS = [
-      { name: 'Finance',                   resourceName: 'topicConstants/7'    },
-      { name: 'Home-and-Garden',           resourceName: 'topicConstants/11'   },
-      { name: 'Travel-and-Transportation', resourceName: 'topicConstants/67'   },
-      { name: 'World-Localities',          resourceName: 'topicConstants/5000' },
-      { name: 'News',                      resourceName: 'topicConstants/16'   },
-      { name: 'Business-and-Industrial',   resourceName: 'topicConstants/12'   },
-      { name: 'Law-and-Government',        resourceName: 'topicConstants/19'   }
+      { name: 'News', resourceName: 'topicConstants/16' }
     ];
 
     var EXCLUDE_AGE_RANGES = [ 'AGE_RANGE_18_24', 'AGE_RANGE_25_34', 'AGE_RANGE_35_44', 'AGE_RANGE_45_54', 'AGE_RANGE_UNDETERMINED' ];
@@ -113,6 +110,24 @@ function runMain(ACCOUNT_CONFIG) {
     Logger.log('[SETUP] 👤 Исключено возрастов: ' + ageOk + '/' + EXCLUDE_AGE_RANGES.length);
   }
 
+  function enforceNewsTopicOnly_() {
+    var topics = AdsApp.display().topics().withCondition('Status IN [ENABLED, PAUSED]').get();
+    var removedCount = 0;
+
+    while (topics.hasNext()) {
+      var topic = topics.next();
+      // ID темы News = 16. Все остальные удаляем.
+      if (topic.getTopicId() !== 16) {
+        topic.remove();
+        removedCount++;
+      }
+    }
+
+    if (removedCount > 0) {
+      Logger.log('[SETUP] Очистка тем: удалено ' + removedCount + ' лишних тем (оставлен только News).');
+    }
+  }
+
   /* ====================== GLOBAL BLACKLIST ====================== */
 
   function syncPlacementBlacklist_(myId, CONFIG) {
@@ -120,33 +135,29 @@ function runMain(ACCOUNT_CONFIG) {
     var endpoint = '/rest/v1/placement_blacklist?select=placement&limit=10000';
     var data = apiCall_('get', endpoint, null, null, CONFIG);
 
-    if (!data || data.length === 0) return;
-
-    var oldListName = 'Global Supabase Blacklist'; 
-    var newListName = 'Global Supabase Blacklist V2'; 
-
-    var oldListIterator = AdsApp.excludedPlacementLists().withCondition("Name = '" + oldListName + "'").get();
-    if (oldListIterator.hasNext()) {
-      var oldList = oldListIterator.next();
-      var allCampaigns = AdsApp.campaigns().get();
-      while (allCampaigns.hasNext()) {
-        try { allCampaigns.next().removeExcludedPlacementList(oldList); } catch(e) {}
-      }
+    if (!data || data.length === 0) {
+      Logger.log('[BLACKLIST] Блэклист пуст или недоступен.');
+      return;
     }
 
-    var listIterator = AdsApp.excludedPlacementLists().withCondition("Name = '" + newListName + "'").get();
+    var listName = 'Global Supabase Blacklist V2'; 
+
+    var listIterator = AdsApp.excludedPlacementLists().withCondition("Name = '" + listName + "'").get();
     var excludedList;
 
     if (listIterator.hasNext()) {
       excludedList = listIterator.next();
     } else {
-      excludedList = AdsApp.newExcludedPlacementListBuilder().withName(newListName).build().getResult();
+      excludedList = AdsApp.newExcludedPlacementListBuilder().withName(listName).build().getResult();
+      Logger.log('[BLACKLIST] Создан новый список исключений: ' + listName);
     }
 
     var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').withCondition('CampaignType = DISPLAY').get();
+    var campCount = 0;
     while (campaigns.hasNext()) {
-      try { campaigns.next().addExcludedPlacementList(excludedList); } catch (e) {}
+      try { campaigns.next().addExcludedPlacementList(excludedList); campCount++; } catch (e) {}
     }
+    Logger.log('[BLACKLIST] Список применен к ' + campCount + ' активным КМС кампаниям.');
 
     var columns = ['Row Type', 'Action', 'Customer ID', 'Placement Exclusion List ID', 'Placement Exclusion List Name', 'Placement Exclusion'];
     var upload = AdsApp.bulkUploads().newCsvUpload(columns);
@@ -159,14 +170,17 @@ function runMain(ACCOUNT_CONFIG) {
           'Action': 'Add',
           'Customer ID': '',
           'Placement Exclusion List ID': '',
-          'Placement Exclusion List Name': newListName,
+          'Placement Exclusion List Name': listName,
           'Placement Exclusion': item.placement
         });
         addedCount++;
       }
     });
 
-    if (addedCount > 0) upload.apply();
+    if (addedCount > 0) {
+      upload.apply();
+      Logger.log('[BLACKLIST] Bulk Upload запущен. Площадок отправлено: ' + addedCount);
+    }
   }
 
   /* ====================== OFFLINE CONVERSIONS ====================== */
@@ -282,12 +296,8 @@ function runMain(ACCOUNT_CONFIG) {
           
           var bName = getSafeString_(task.business_name, 25, 'My Business');
           var fUrl  = String(task.final_url || 'https://example.com').trim();
-          if (fUrl.indexOf('http') !== 0) fUrl = 'https://' + fUrl; // Фикс пустых протоколов
+          if (fUrl.indexOf('http') !== 0) fUrl = 'https://' + fUrl; 
           var lHead = getSafeString_(task.long_headline, 90, 'Длинный заголовок по умолчанию');
-
-          Logger.log('  -> BusinessName: [' + bName + '] (' + bName.length + '/25)');
-          Logger.log('  -> FinalUrl: [' + fUrl + ']');
-          Logger.log('  -> LongHeadline: [' + lHead + '] (' + lHead.length + '/90)');
 
           var adBuilder = adGroup.newAd().responsiveDisplayAdBuilder()
             .withBusinessName(bName)
@@ -298,14 +308,12 @@ function runMain(ACCOUNT_CONFIG) {
           for (var h = 0; h < Math.min(headlinesList.length, 5); h++) {
             var safeH = getSafeString_(headlinesList[h], 30, 'Заголовок ' + (h+1));
             adBuilder.addHeadline(safeH);
-            Logger.log('  -> Headline ' + (h+1) + ': [' + safeH + '] (' + safeH.length + '/30)');
           }
 
           var descList = (task.descriptions && task.descriptions.length > 0) ? task.descriptions : [task.description];
           for (var d = 0; d < Math.min(descList.length, 5); d++) {
             var safeD = getSafeString_(descList[d], 90, 'Описание ' + (d+1));
             adBuilder.addDescription(safeD);
-            Logger.log('  -> Description ' + (d+1) + ': [' + safeD + '] (' + safeD.length + '/90)');
           }
 
           loadedSqAssets.forEach(function(asset) { adBuilder.addSquareMarketingImage(asset); });
@@ -318,7 +326,7 @@ function runMain(ACCOUNT_CONFIG) {
              var errors = adOperation.getErrors();
              Logger.log('[CREATE_AD] ❌ ОШИБКА БИЛДЕРА: ' + errors.join(', '));
           } else {
-             var newAd = adOperation.getResult(); // Если отказ на бэкенде, ошибка вылетит тут
+             var newAd = adOperation.getResult(); 
              Logger.log('[CREATE_AD] ✅ Успех! ID: ' + newAd.getId());
              groupCount++;
           }
@@ -461,6 +469,10 @@ function runMain(ACCOUNT_CONFIG) {
     var res = UrlFetchApp.fetch(CONFIG.SUPABASE_URL + endpoint, { method: method, headers: headers, payload: payload ? JSON.stringify(payload) : null, muteHttpExceptions: true });
     var code = res.getResponseCode();
     var text = res.getContentText();
+    
+    if (code !== 200 && code !== 201 && code !== 204) {
+      Logger.log('[API_ERROR] Body: ' + text);
+    }
     return (method === 'get' && code === 200 && text.length > 0) ? JSON.parse(text) : null;
   }
 
