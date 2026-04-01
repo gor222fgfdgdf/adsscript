@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.31 - Fix Missing Function & Creation Logging)
+ * Google Ads Master Script (v15.33 - Blacklist Versioning & Cleanup)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -125,24 +125,44 @@ function runMain(ACCOUNT_CONFIG) {
       return;
     }
 
-    var listName = 'Global Supabase Blacklist';
-    var listIterator = AdsApp.excludedPlacementLists().withCondition("Name = '" + listName + "'").get();
+    var oldListName = 'Global Supabase Blacklist'; // Имя испорченного списка
+    var newListName = 'Global Supabase Blacklist V2'; // Имя нового правильного списка
+
+    // 1. Открепляем старый список от всех кампаний (если он есть)
+    var oldListIterator = AdsApp.excludedPlacementLists().withCondition("Name = '" + oldListName + "'").get();
+    if (oldListIterator.hasNext()) {
+      var oldList = oldListIterator.next();
+      var allCampaigns = AdsApp.campaigns().get();
+      var detachedCount = 0;
+      while (allCampaigns.hasNext()) {
+        try { 
+          allCampaigns.next().removeExcludedPlacementList(oldList); 
+          detachedCount++; 
+        } catch(e) {}
+      }
+      Logger.log('[BLACKLIST] Старый список откреплен от ' + detachedCount + ' кампаний.');
+    }
+
+    // 2. Ищем или создаем новый список V2
+    var listIterator = AdsApp.excludedPlacementLists().withCondition("Name = '" + newListName + "'").get();
     var excludedList;
 
     if (listIterator.hasNext()) {
       excludedList = listIterator.next();
     } else {
-      excludedList = AdsApp.newExcludedPlacementListBuilder().withName(listName).build().getResult();
-      Logger.log('[BLACKLIST] Создан новый список исключений: ' + listName);
+      excludedList = AdsApp.newExcludedPlacementListBuilder().withName(newListName).build().getResult();
+      Logger.log('[BLACKLIST] Создан новый список исключений: ' + newListName);
     }
 
+    // 3. Прикрепляем новый список к активным кампаниям КМС
     var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').withCondition('CampaignType = DISPLAY').get();
     var campCount = 0;
     while (campaigns.hasNext()) {
       try { campaigns.next().addExcludedPlacementList(excludedList); campCount++; } catch (e) {}
     }
-    Logger.log('[BLACKLIST] Список применен к ' + campCount + ' активным КМС кампаниям.');
+    Logger.log('[BLACKLIST] Новый список применен к ' + campCount + ' активным КМС кампаниям.');
 
+    // 4. Заливаем площадки в новый список
     var columns = ['Row Type', 'Action', 'Customer ID', 'Placement Exclusion List ID', 'Placement Exclusion List Name', 'Placement Exclusion'];
     var upload = AdsApp.bulkUploads().newCsvUpload(columns);
     
@@ -154,7 +174,7 @@ function runMain(ACCOUNT_CONFIG) {
           'Action': 'Add',
           'Customer ID': '',
           'Placement Exclusion List ID': '',
-          'Placement Exclusion List Name': listName,
+          'Placement Exclusion List Name': newListName,
           'Placement Exclusion': item.placement
         });
         addedCount++;
@@ -230,7 +250,7 @@ function runMain(ACCOUNT_CONFIG) {
 
         Logger.log('[CREATE_AD] Обработка задания ID: ' + task.ad_id + '. Загрузка ассетов...');
         
-        var ts = new Date().getTime().toString().substring(7); // Уникальная метка для имени картинки
+        var ts = new Date().getTime().toString().substring(7);
         
         var sqBlob = UrlFetchApp.fetch(task.square_image_url || task.img_square || 'https://example.com/1x1.jpg').getBlob();
         var sqAsset = AdsApp.adAssets().newImageAssetBuilder()
@@ -293,9 +313,7 @@ function runMain(ACCOUNT_CONFIG) {
       current_cpc: activeBid, balance: balance, updated_at: new Date().toISOString()
     };
     
-    Logger.log('[REGISTRY] Payload для таблицы accounts: ' + JSON.stringify(payload));
     apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS, payload, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
-    Logger.log('[REGISTRY] Синхронизация аккаунта завершена.');
   }
 
   function syncAdsToRegistry_(myId, CONFIG) {
@@ -309,6 +327,7 @@ function runMain(ACCOUNT_CONFIG) {
       var ad = ads.next();
       var stats = ad.getStatsFor('TODAY');
       var headlines = (typeof ad.getName === 'function') ? ad.getName() : 'Ad #' + ad.getId();
+      var adStatus = ad.isPaused() ? 'PAUSED' : 'ENABLED';
       
       var policyStatus = 'UNKNOWN';
       try { 
@@ -327,23 +346,25 @@ function runMain(ACCOUNT_CONFIG) {
         }
       } catch(e) {}
 
+      Logger.log('[SYNC_ADS] -> Объявление ID: ' + ad.getId() + ' | Статус: ' + adStatus + ' | Модерация: ' + policyStatus);
+
       batch.push({
         ad_id: ad.getId().toString(), account_id: cleanId, campaign_name: ad.getCampaign().getName(),
         type: ad.getType(), headline: headlines.split(' | ')[0],
         final_url: ad.urls().getFinalUrl() || '', clicks: stats.getClicks(), cost: stats.getCost(),
-        status: ad.isPaused() ? 'PAUSED' : 'ENABLED', policy_status: policyStatus, updated_at: new Date().toISOString()
+        status: adStatus, policy_status: policyStatus, updated_at: new Date().toISOString()
       });
 
       if (batch.length >= 50) { 
-        Logger.log('[SYNC_ADS] Отправка батча объявлений (50шт)');
-        apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ADS, batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG); 
+        Logger.log('[SYNC_ADS] Отправка батча (50шт)');
+        apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ADS, batch, { 'Prefer': 'resolution=merge-duplicates, return=representation' }, CONFIG); 
         totalAdsSynced += batch.length;
         batch = []; 
       }
     }
     if (batch.length > 0) {
-      Logger.log('[SYNC_ADS] Отправка остатка объявлений (' + batch.length + 'шт)');
-      apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ADS, batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
+      Logger.log('[SYNC_ADS] Отправка остатка (' + batch.length + 'шт)');
+      apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ADS, batch, { 'Prefer': 'resolution=merge-duplicates, return=representation' }, CONFIG);
       totalAdsSynced += batch.length;
     }
     Logger.log('[SYNC_ADS] Готово. Всего синхронизировано объявлений: ' + totalAdsSynced);
@@ -351,21 +372,11 @@ function runMain(ACCOUNT_CONFIG) {
 
   function syncBidsFromRegistry_(myId, CONFIG) {
     var cleanId = myId.replace(/-/g, '');
-    Logger.log('[BIDS] Проверка новых ставок в БД (uid: ' + cleanId + ')');
-    
     var data = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS + '?uid=eq.' + cleanId + '&select=target_cpc,needs_bid_sync', null, null, CONFIG);
     
-    if (!data || data.length === 0) {
-      Logger.log('[BIDS] Аккаунт не найден в БД.');
-      return;
-    }
-    if (!data[0].needs_bid_sync) {
-      Logger.log('[BIDS] Изменение ставки не требуется.');
-      return;
-    }
+    if (!data || data.length === 0 || !data[0].needs_bid_sync) return;
 
     var target = data[0].target_cpc;
-    Logger.log('[BIDS] Применяем ставку: ' + target);
     var ags = AdsApp.adGroups().withCondition('Status = ENABLED').get();
     while (ags.hasNext()) ags.next().bidding().setCpc(target);
     
@@ -374,15 +385,10 @@ function runMain(ACCOUNT_CONFIG) {
 
   function syncAdEditsFromRegistry_(myId, CONFIG) {
     var cleanId = myId.replace(/-/g, '');
-    Logger.log('[AD_EDITS] Проверка изменений статусов/ссылок...');
     var edits = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ADS + '?account_id=eq.' + cleanId + '&needs_sync=eq.true', null, null, CONFIG);
     
-    if (!edits || edits.length === 0) {
-      Logger.log('[AD_EDITS] Нет заданий.');
-      return;
-    }
+    if (!edits || edits.length === 0) return;
 
-    Logger.log('[AD_EDITS] Найдено заданий: ' + edits.length);
     edits.forEach(function(edit) {
       var adIterator = AdsApp.ads().withIds([edit.ad_id]).get();
       if (!adIterator.hasNext()) return;
@@ -425,29 +431,23 @@ function runMain(ACCOUNT_CONFIG) {
     var headers = { 'apikey': key, 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' };
     if (headersExtra) { for (var h in headersExtra) headers[h] = headersExtra[h]; }
 
-    Logger.log('[API_CALL] Request: ' + method.toUpperCase() + ' ' + endpoint);
-
     var res = UrlFetchApp.fetch(CONFIG.SUPABASE_URL + endpoint, { method: method, headers: headers, payload: payload ? JSON.stringify(payload) : null, muteHttpExceptions: true });
     var code = res.getResponseCode();
+    var text = res.getContentText();
     
-    Logger.log('[API_CALL] Response Code: ' + code);
-
     if (code !== 200 && code !== 201 && code !== 204) {
-      Logger.log('[API_ERROR] Body: ' + res.getContentText());
+      Logger.log('[API_ERROR] ' + method.toUpperCase() + ' ' + endpoint + ' | Code: ' + code + ' | Body: ' + text);
     }
-    return (method === 'get' && code === 200) ? JSON.parse(res.getContentText()) : null;
+    return (method === 'get' && code === 200 && text.length > 0) ? JSON.parse(text) : null;
   }
 
   function patchSupabase_(table, data, query, CONFIG) {
     var key = CONFIG.SUPABASE_KEY.replace(/\s/g, '');
     var endpoint = '/rest/v1/' + table + '?' + query;
-    Logger.log('[PATCH] ' + endpoint + ' Payload: ' + JSON.stringify(data));
-
-    var res = UrlFetchApp.fetch(CONFIG.SUPABASE_URL + endpoint, {
+    UrlFetchApp.fetch(CONFIG.SUPABASE_URL + endpoint, {
       method: 'patch', contentType: 'application/json', headers: { 'apikey': key, 'Authorization': 'Bearer ' + key },
       payload: JSON.stringify(data), muteHttpExceptions: true
     });
-    Logger.log('[PATCH] Response Code: ' + res.getResponseCode());
   }
 
   function tgSend_(txt, CONFIG) {
