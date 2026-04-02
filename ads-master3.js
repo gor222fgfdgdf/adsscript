@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.55 - Exact Game Categories Exclusion)
+ * Google Ads Master Script (v15.58 - Broad Targeting & Remove All Topics)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -30,8 +30,9 @@ function runMain(ACCOUNT_CONFIG) {
 
   try { checkSafetyLimitsStrict_(acc, CONFIG); }   catch (e) { Logger.log('[ERR][SAFETY] ' + e.message); }
   
+  // БЛОК АВТОНАСТРОЙКИ АККАУНТА
   try { maybeCreateDefaultAdGroup_(); }            catch (e) { Logger.log('[ERR][SETUP_AG] ' + e.message); }
-  try { ensureNewsTopicInAllGroups_(); }           catch (e) { Logger.log('[ERR][TOPICS] ' + e.message); }
+  try { removeAllTopics_(); }                      catch (e) { Logger.log('[ERR][TOPIC_CLEANUP] ' + e.message); }
   try { ensureConversionAction_(CONFIG); }         catch (e) { Logger.log('[ERR][CONV_SETUP] ' + e.message); }
 
   try { syncBidsFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][BIDS] ' + e.message); }
@@ -84,7 +85,7 @@ function runMain(ACCOUNT_CONFIG) {
     }
   }
 
-  /* ====================== АВТОСОЗДАНИЕ ГРУППЫ И ТЕМ ====================== */
+  /* ====================== АВТОСОЗДАНИЕ ГРУППЫ И ОЧИСТКА ТЕМ ====================== */
 
   function maybeCreateDefaultAdGroup_() {
     Logger.log('[SETUP] Проверка наличия групп объявлений...');
@@ -125,46 +126,33 @@ function runMain(ACCOUNT_CONFIG) {
         });
       } catch(e) {}
     }
-    Logger.log('[SETUP] ✅ Базовая группа успешно настроена.');
+    Logger.log('[SETUP] ✅ Базовая группа (широкая) успешно настроена.');
   }
 
-  function ensureNewsTopicInAllGroups_() {
-    Logger.log('[TOPICS] Проверка наличия топика News (ID 16) во всех активных группах...');
+  function removeAllTopics_() {
+    Logger.log('[TOPICS] Удаление всех тем таргетинга для перехода на широкую аудиторию...');
     var adGroups = AdsApp.adGroups().withCondition('Status = ENABLED').get();
-    var addedCount = 0;
-    var restoredCount = 0;
+    var removedCount = 0;
 
     while (adGroups.hasNext()) {
       var ag = adGroups.next();
       try {
-        var existingTopics = ag.display().topics().get();
-        var found = false;
-        
-        while (existingTopics.hasNext()) {
-          var t = existingTopics.next();
-          if (t.getTopicId() === 16) {
-            found = true;
-            if (t.isPaused() || !t.isEnabled()) {
-              t.enable();
-              restoredCount++;
-              Logger.log('[TOPICS] 🔄 Топик News восстановлен/включен в группе: ' + ag.getName());
-            }
-            break;
-          }
-        }
-
-        if (!found) {
-          var op = ag.display().newTopicBuilder().withTopicId(16).build();
-          if (op.isSuccessful()) {
-            Logger.log('[TOPICS] ➕ Топик News добавлен в группу: ' + ag.getName());
-            addedCount++;
-          }
+        var topics = ag.display().topics().get();
+        while (topics.hasNext()) {
+          var t = topics.next();
+          t.remove();
+          removedCount++;
         }
       } catch(e) {
-        Logger.log('[TOPICS] ⚠️ Ошибка при работе с группой ' + ag.getName() + ': ' + e.message);
+        Logger.log('[TOPICS] ⚠️ Ошибка при очистке тем в группе ' + ag.getName() + ': ' + e.message);
       }
     }
-    Logger.log('[TOPICS] Готово. Создано новых: ' + addedCount + '. Восстановлено: ' + restoredCount + '.');
+    
+    if (removedCount > 0) {
+      Logger.log('[TOPICS] ✅ Успешно удалено тем таргетинга: ' + removedCount);
+    } else {
+      Logger.log('[TOPICS] Темы таргетинга не найдены (уже широкая аудитория).');
+    }
   }
 
   /* ====================== ИСКЛЮЧЕНИЕ YOUTUBE ====================== */
@@ -236,23 +224,10 @@ function runMain(ACCOUNT_CONFIG) {
     }
     Logger.log('[BLACKLIST] Общий список привязан к ' + campCount + ' активным КМС кампаниям.');
 
-    // Точные ID всех игровых подкатегорий для Android и iOS
+    // Точные категории по запросу пользователя (Игры)
     var GAME_CATEGORIES = [
-      // Google Play Games
-      'mobileappcategory::60004', 'mobileappcategory::60005', 'mobileappcategory::60006', 
-      'mobileappcategory::60007', 'mobileappcategory::60008', 'mobileappcategory::60009', 
-      'mobileappcategory::60010', 'mobileappcategory::60011', 'mobileappcategory::60012', 
-      'mobileappcategory::60013', 'mobileappcategory::60014', 'mobileappcategory::60015', 
-      'mobileappcategory::60016', 'mobileappcategory::60017', 'mobileappcategory::60018', 
-      'mobileappcategory::60019', 'mobileappcategory::60020',
-      // Apple App Store Games
-      'mobileappcategory::60024', 'mobileappcategory::60025', 'mobileappcategory::60026', 
-      'mobileappcategory::60027', 'mobileappcategory::60028', 'mobileappcategory::60029', 
-      'mobileappcategory::60030', 'mobileappcategory::60031', 'mobileappcategory::60032', 
-      'mobileappcategory::60033', 'mobileappcategory::60034', 'mobileappcategory::60035', 
-      'mobileappcategory::60036', 'mobileappcategory::60037', 'mobileappcategory::60038', 
-      'mobileappcategory::60039', 'mobileappcategory::60040', 'mobileappcategory::60041', 
-      'mobileappcategory::60042'
+      'mobileappcategory::60008',
+      'mobileappcategory::60506'
     ];
 
     var columns = ['Row Type', 'Action', 'Customer ID', 'Placement Exclusion List ID', 'Placement Exclusion List Name', 'Placement Exclusion'];
