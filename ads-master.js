@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.58 - Broad Targeting & Remove All Topics)
+ * Google Ads Master Script (v15.59 - Detailed Conversion Logging)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -30,7 +30,6 @@ function runMain(ACCOUNT_CONFIG) {
 
   try { checkSafetyLimitsStrict_(acc, CONFIG); }   catch (e) { Logger.log('[ERR][SAFETY] ' + e.message); }
   
-  // БЛОК АВТОНАСТРОЙКИ АККАУНТА
   try { maybeCreateDefaultAdGroup_(); }            catch (e) { Logger.log('[ERR][SETUP_AG] ' + e.message); }
   try { removeAllTopics_(); }                      catch (e) { Logger.log('[ERR][TOPIC_CLEANUP] ' + e.message); }
   try { ensureConversionAction_(CONFIG); }         catch (e) { Logger.log('[ERR][CONV_SETUP] ' + e.message); }
@@ -224,7 +223,6 @@ function runMain(ACCOUNT_CONFIG) {
     }
     Logger.log('[BLACKLIST] Общий список привязан к ' + campCount + ' активным КМС кампаниям.');
 
-    // Точные категории по запросу пользователя (Игры)
     var GAME_CATEGORIES = [
       'mobileappcategory::60008',
       'mobileappcategory::60506'
@@ -234,7 +232,6 @@ function runMain(ACCOUNT_CONFIG) {
     var upload = AdsApp.bulkUploads().newCsvUpload(columns);
     var addedCount = 0;
 
-    // 1. Добавляем игровые категории
     GAME_CATEGORIES.forEach(function(item) {
       upload.append({
         'Row Type': 'Negative Placement',
@@ -247,7 +244,6 @@ function runMain(ACCOUNT_CONFIG) {
       addedCount++;
     });
 
-    // 2. Добавляем данные из БД
     if (data && data.length > 0) {
       data.forEach(function(item) {
         if (item.placement && item.placement.indexOf('youtube.com') === -1 && GAME_CATEGORIES.indexOf(item.placement) === -1) { 
@@ -273,46 +269,88 @@ function runMain(ACCOUNT_CONFIG) {
   /* ====================== OFFLINE CONVERSIONS ====================== */
 
   function uploadConversionsFromEdge_(myId, CONFIG) {
-    if (!CONFIG.CONVERSION_NAME) return;
-    Logger.log('[CONVERSIONS] Запрос новых оффлайн-конверсий...');
+    if (!CONFIG.CONVERSION_NAME) {
+      Logger.log('[CONVERSIONS] ⚠️ Пропуск: Имя конверсии не задано в CONFIG.');
+      return;
+    }
+    
+    Logger.log('[CONVERSIONS] === СТАРТ ПРОВЕРКИ КОНВЕРСИЙ ===');
+    Logger.log('[CONVERSIONS] Целевая конверсия: ' + CONFIG.CONVERSION_NAME);
 
     var headers = { 'Authorization': 'Bearer ' + CONFIG.SUPABASE_KEY.replace(/\s/g, ''), 'Content-Type': 'application/json' };
-    var getRes = UrlFetchApp.fetch(CONFIG.SUPABASE_URL + '/functions/v1/fetch-postbacks', { method: 'get', headers: headers, muteHttpExceptions: true });
+    var fetchUrl = CONFIG.SUPABASE_URL + '/functions/v1/fetch-postbacks';
+    Logger.log('[CONVERSIONS] GET Запрос к: ' + fetchUrl);
     
-    if (getRes.getResponseCode() !== 200) {
+    var getRes = UrlFetchApp.fetch(fetchUrl, { method: 'get', headers: headers, muteHttpExceptions: true });
+    var resCode = getRes.getResponseCode();
+    var resText = getRes.getContentText();
+
+    Logger.log('[CONVERSIONS] Код ответа сервера: ' + resCode);
+    Logger.log('[CONVERSIONS] Тело ответа (первые 200 симв.): ' + resText.substring(0, 200));
+
+    if (resCode !== 200) {
       Logger.log('[CONVERSIONS] ❌ Ошибка сервера БД при получении конверсий.');
       return;
     }
     
-    var data = JSON.parse(getRes.getContentText());
-    if (!data.conversions || data.count === 0 || data.conversions.length === 0) {
-      Logger.log('[CONVERSIONS] Новых конверсий в базе нет.');
+    var data = JSON.parse(resText);
+    if (!data || !data.conversions || data.conversions.length === 0) {
+      Logger.log('[CONVERSIONS] Новых конверсий в базе не найдено.');
       return;
     }
+
+    Logger.log('[CONVERSIONS] Всего конверсий в ответе БД: ' + data.conversions.length);
 
     var upload = AdsApp.bulkUploads().newCsvUpload(['Google Click ID', 'Conversion Name', 'Conversion Time', 'Conversion Value', 'Conversion Currency']);
     upload.forOfflineConversions();
 
     var uploadedIds = [];
     var cleanId = myId.replace(/-/g, '');
+    Logger.log('[CONVERSIONS] Текущий ID аккаунта (очищенный): ' + cleanId);
 
-    data.conversions.forEach(function(c) {
-      if ((c.account_uid || '').replace(/-/g, '') !== cleanId || !c.gclid) return;
+    data.conversions.forEach(function(c, index) {
+      var targetAcc = (c.account_uid || '').replace(/-/g, '');
+      var gclid = c.gclid || 'ПУСТО';
+      var isMatch = (targetAcc === cleanId);
+
+      Logger.log('[CONVERSIONS] [' + index + '] Проверка: GCLID=' + gclid + ', Acc=' + targetAcc + ' -> Совпадение: ' + isMatch);
+
+      if (!isMatch || !c.gclid) return;
+
+      var convTime = c.external_timestamp ? c.external_timestamp.replace('T', ' ') + '+0100' : 'ПУСТО';
+      var payout = c.payout || 0;
+      var currency = c.currency || 'USD';
+
+      Logger.log('[CONVERSIONS] [' + index + '] ✅ Добавляем в выгрузку: Time=' + convTime + ', Value=' + payout + ' ' + currency);
+
       upload.append({
-        'Google Click ID': c.gclid, 'Conversion Name': CONFIG.CONVERSION_NAME,
-        'Conversion Time': c.external_timestamp.replace('T', ' ') + '+0100',
-        'Conversion Value': c.payout || 0, 'Conversion Currency': c.currency || 'USD'
+        'Google Click ID': c.gclid, 
+        'Conversion Name': CONFIG.CONVERSION_NAME,
+        'Conversion Time': convTime,
+        'Conversion Value': payout, 
+        'Conversion Currency': currency
       });
       uploadedIds.push(c.id);
     });
 
     if (uploadedIds.length > 0) {
+      Logger.log('[CONVERSIONS] Запуск upload.apply(). Ожидание отправки...');
       upload.apply();
-      Logger.log('[CONVERSIONS] Отправлено конверсий: ' + uploadedIds.length);
-      UrlFetchApp.fetch(CONFIG.SUPABASE_URL + '/functions/v1/fetch-postbacks', { method: 'post', headers: headers, payload: JSON.stringify({ ids: uploadedIds }), muteHttpExceptions: true });
+      Logger.log('[CONVERSIONS] Данные отправлены в Google Ads. Кол-во: ' + uploadedIds.length);
+      
+      Logger.log('[CONVERSIONS] Отправка подтверждения в БД по ID: ' + JSON.stringify(uploadedIds));
+      var postRes = UrlFetchApp.fetch(fetchUrl, { 
+        method: 'post', 
+        headers: headers, 
+        payload: JSON.stringify({ ids: uploadedIds }), 
+        muteHttpExceptions: true 
+      });
+      Logger.log('[CONVERSIONS] Ответ БД на подтверждение: Code ' + postRes.getResponseCode() + ' | Body: ' + postRes.getContentText().substring(0, 100));
     } else {
-      Logger.log('[CONVERSIONS] Конверсии есть, но не для текущего аккаунта (' + cleanId + ').');
+      Logger.log('[CONVERSIONS] Нет конверсий для отправки в текущий аккаунт (' + cleanId + ').');
     }
+    
+    Logger.log('[CONVERSIONS] === КОНЕЦ ПРОВЕРКИ КОНВЕРСИЙ ===');
   }
 
   /* ====================== ХЕЛПЕРЫ ====================== */
