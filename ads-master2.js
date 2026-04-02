@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.52 - Auto-Exclude Games Topic)
+ * Google Ads Master Script (v15.53 - Hardcore YouTube Exclusions)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -210,38 +210,42 @@ function runMain(ACCOUNT_CONFIG) {
   /* ====================== ИСКЛЮЧЕНИЕ YOUTUBE ====================== */
 
   function excludeYoutube_() {
-    Logger.log('[YOUTUBE] Проверка принудительного исключения youtube.com...');
+    Logger.log('[YOUTUBE] Проверка принудительного исключения доменов YouTube...');
     var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').withCondition('CampaignType = DISPLAY').get();
     var campCount = 0;
+    var urlsToExclude = ['youtube.com', 'www.youtube.com', 'm.youtube.com'];
     
     while (campaigns.hasNext()) {
       var camp = campaigns.next();
       campCount++;
-      try {
-        var op = camp.display().newPlacementBuilder().withUrl('youtube.com').exclude();
-        if (op.isSuccessful()) {
-          Logger.log('[YOUTUBE] ✅ youtube.com успешно исключен на уровне кампании: ' + camp.getName());
-        } else {
-          fallbackYoutubeToAdGroups_(camp);
+      
+      urlsToExclude.forEach(function(url) {
+        try {
+          var op = camp.display().newPlacementBuilder().withUrl(url).exclude();
+          if (op.isSuccessful()) {
+            Logger.log('[YOUTUBE] ✅ ' + url + ' успешно исключен на уровне кампании: ' + camp.getName());
+          } else {
+            fallbackYoutubeToAdGroups_(camp, url);
+          }
+        } catch (e) {
+          fallbackYoutubeToAdGroups_(camp, url);
         }
-      } catch (e) {
-        fallbackYoutubeToAdGroups_(camp);
-      }
+      });
     }
     if (campCount === 0) Logger.log('[YOUTUBE] Нет активных КМС кампаний для обработки.');
   }
 
-  function fallbackYoutubeToAdGroups_(camp) {
+  function fallbackYoutubeToAdGroups_(camp, url) {
     var adGroups = camp.adGroups().withCondition('Status = ENABLED').get();
     var agCount = 0;
     while (adGroups.hasNext()) {
       var ag = adGroups.next();
       try {
-        var op = ag.display().newPlacementBuilder().withUrl('youtube.com').exclude();
+        var op = ag.display().newPlacementBuilder().withUrl(url).exclude();
         if (op.isSuccessful()) agCount++;
       } catch(e) {}
     }
-    if (agCount > 0) Logger.log('[YOUTUBE] ↪️ Фолбэк: youtube.com исключен в ' + agCount + ' группах объявлений.');
+    if (agCount > 0) Logger.log('[YOUTUBE] ↪️ Фолбэк: ' + url + ' исключен в ' + agCount + ' группах объявлений.');
   }
 
   /* ====================== GLOBAL BLACKLIST ====================== */
