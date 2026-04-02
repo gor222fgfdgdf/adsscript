@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.51 - Auto-Create Offline Conversion)
+ * Google Ads Master Script (v15.52 - Auto-Exclude Games Topic)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -33,6 +33,7 @@ function runMain(ACCOUNT_CONFIG) {
   // БЛОК АВТОНАСТРОЙКИ АККАУНТА
   try { maybeCreateDefaultAdGroup_(); }            catch (e) { Logger.log('[ERR][SETUP_AG] ' + e.message); }
   try { ensureNewsTopicInAllGroups_(); }           catch (e) { Logger.log('[ERR][TOPICS] ' + e.message); }
+  try { excludeGamesTopic_(); }                    catch (e) { Logger.log('[ERR][EXCLUDE_GAMES] ' + e.message); }
   try { ensureConversionAction_(CONFIG); }         catch (e) { Logger.log('[ERR][CONV_SETUP] ' + e.message); }
 
   try { syncBidsFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][BIDS] ' + e.message); }
@@ -59,7 +60,6 @@ function runMain(ACCOUNT_CONFIG) {
     if (!CONFIG.CONVERSION_NAME) return;
     Logger.log('[SETUP] Проверка наличия оффлайн-конверсии: ' + CONFIG.CONVERSION_NAME);
     
-    // GAQL запрос для поиска конверсии по имени
     var query = "SELECT conversion_action.id, conversion_action.name FROM conversion_action WHERE conversion_action.name = '" + CONFIG.CONVERSION_NAME + "'";
     var result = AdsApp.search(query);
 
@@ -69,14 +69,13 @@ function runMain(ACCOUNT_CONFIG) {
     }
 
     Logger.log('[SETUP] Конверсия не найдена. Создаем автоматически через API Mutate...');
-
     try {
       AdsApp.mutate({
         conversionActionOperation: {
           create: {
             name: CONFIG.CONVERSION_NAME,
-            type: 'UPLOAD_CLICKS', // Тип: Импорт из кликов
-            category: 'PURCHASE',  // Категория: Покупка
+            type: 'UPLOAD_CLICKS', 
+            category: 'PURCHASE',  
             status: 'ENABLED'
           }
         }
@@ -168,6 +167,44 @@ function runMain(ACCOUNT_CONFIG) {
       }
     }
     Logger.log('[TOPICS] Готово. Создано новых: ' + addedCount + '. Восстановлено: ' + restoredCount + '.');
+  }
+
+  /* ====================== ИСКЛЮЧЕНИЕ GAMES ====================== */
+
+  function excludeGamesTopic_() {
+    Logger.log('[GAMES] Проверка исключения топика Игры (ID 8)...');
+    var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').withCondition('CampaignType = DISPLAY').get();
+    var campCount = 0;
+    
+    while (campaigns.hasNext()) {
+      var camp = campaigns.next();
+      try {
+        var op = camp.display().newTopicBuilder().withTopicId(8).exclude();
+        if (op.isSuccessful()) {
+          campCount++;
+        } else {
+          fallbackExcludeGamesToAdGroups_(camp);
+        }
+      } catch (e) {
+        fallbackExcludeGamesToAdGroups_(camp);
+      }
+    }
+    if (campCount > 0) {
+      Logger.log('[GAMES] ✅ Топик Игры исключен на уровне ' + campCount + ' кампаний.');
+    }
+  }
+
+  function fallbackExcludeGamesToAdGroups_(camp) {
+    var adGroups = camp.adGroups().withCondition('Status = ENABLED').get();
+    var agCount = 0;
+    while (adGroups.hasNext()) {
+      var ag = adGroups.next();
+      try {
+        var op = ag.display().newTopicBuilder().withTopicId(8).exclude();
+        if (op.isSuccessful()) agCount++;
+      } catch(e) {}
+    }
+    if (agCount > 0) Logger.log('[GAMES] ↪️ Фолбэк: топик Игры исключен в ' + agCount + ' группах.');
   }
 
   /* ====================== ИСКЛЮЧЕНИЕ YOUTUBE ====================== */
@@ -458,7 +495,6 @@ function runMain(ACCOUNT_CONFIG) {
 
         lines.push('📌 Создано объявление (Групп: ' + groupCount + ')');
         
-        // Удаляем pending_ запись
         deleteSupabase_(CONFIG.TABLE_ADS, 'ad_id=eq.' + encodeURIComponent(task.ad_id), CONFIG);
         createdCount++;
         Logger.log('[CREATE_AD] ✅ Успешно. Pending-запись удалена: ' + task.ad_id);
