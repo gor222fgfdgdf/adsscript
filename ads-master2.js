@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.46 - Smart Add News Topic)
+ * Google Ads Master Script (v15.49 - Bulletproof News Topic Ensure)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -102,34 +102,38 @@ function runMain(ACCOUNT_CONFIG) {
   }
 
   function ensureNewsTopicInAllGroups_() {
-    Logger.log('[TOPICS] Проверка наличия топика News (ID 16) во всех активных группах...');
+    Logger.log('[TOPICS] Страховочная проверка и добавление топика News (ID 16) во все активные группы...');
     var adGroups = AdsApp.adGroups().withCondition('Status = ENABLED').get();
     var addedCount = 0;
-    var existCount = 0;
+    var restoredCount = 0;
 
     while (adGroups.hasNext()) {
       var ag = adGroups.next();
       try {
-        // Проверяем, есть ли уже топик 16 в этой группе
-        var existingTopics = ag.display().topics().withCondition('TopicId = 16').get();
-        if (existingTopics.hasNext()) {
-          existCount++;
-          continue; // Уже есть, идем дальше
+        // 1. Проверяем и восстанавливаем, если он был удален/на паузе
+        var existingTopics = ag.display().topics().get();
+        while (existingTopics.hasNext()) {
+          var t = existingTopics.next();
+          if (t.getTopicId() === 16) {
+            if (t.isPaused() || !t.isEnabled()) {
+              t.enable();
+              restoredCount++;
+              Logger.log('[TOPICS] 🔄 Топик News восстановлен в группе: ' + ag.getName());
+            }
+            break;
+          }
         }
 
-        // Если нет, добавляем
+        // 2. Страховочное принудительное создание (API Google проигнорирует, если он уже есть)
         var op = ag.display().newTopicBuilder().withTopicId(16).build();
         if (op.isSuccessful()) {
-          Logger.log('[TOPICS] ➕ Топик News добавлен в группу: ' + ag.getName());
           addedCount++;
-        } else {
-          Logger.log('[TOPICS] ❌ Ошибка добавления в группу ' + ag.getName() + ': ' + op.getErrors().join(', '));
         }
       } catch(e) {
         Logger.log('[TOPICS] ⚠️ Ошибка при работе с группой ' + ag.getName() + ': ' + e.message);
       }
     }
-    Logger.log('[TOPICS] Готово. Добавлено в новых групп: ' + addedCount + '. Уже присутствовал: ' + existCount + '.');
+    Logger.log('[TOPICS] Готово. Команда создания отправлена ' + addedCount + ' раз. Восстановлено из удаленных: ' + restoredCount + '.');
   }
 
   /* ====================== ИСКЛЮЧЕНИЕ YOUTUBE ====================== */
