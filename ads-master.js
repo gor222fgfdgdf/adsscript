@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.60 - Optimized Conversion Fetching)
+ * Google Ads Master Script (v15.61 - V3 Blacklist Migration)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -198,21 +198,39 @@ function runMain(ACCOUNT_CONFIG) {
   /* ====================== GLOBAL BLACKLIST ====================== */
 
   function syncPlacementBlacklist_(myId, CONFIG) {
-    Logger.log('[BLACKLIST] Получение глобального списка минус-площадок...');
-    var endpoint = '/rest/v1/placement_blacklist?select=placement&limit=10000';
-    var data = apiCall_('get', endpoint, null, null, CONFIG);
+    Logger.log('[BLACKLIST] Запуск миграции и синхронизации списка площадок...');
+    
+    var oldListName = 'Global Supabase Blacklist V2';
+    var newListName = 'Global Supabase Blacklist V3';
 
-    var listName = 'Global Supabase Blacklist V2'; 
+    // 1. Отвязываем старый список (V2) от всех кампаний
+    var oldListIterator = AdsApp.excludedPlacementLists().withCondition("Name = '" + oldListName + "'").get();
+    if (oldListIterator.hasNext()) {
+      var oldList = oldListIterator.next();
+      var linkedCamps = oldList.campaigns().get();
+      var detachedCount = 0;
+      while (linkedCamps.hasNext()) {
+        try {
+          linkedCamps.next().removeExcludedPlacementList(oldList);
+          detachedCount++;
+        } catch(e) {}
+      }
+      if (detachedCount > 0) {
+        Logger.log('[BLACKLIST] Старый список (' + oldListName + ') отвязан от ' + detachedCount + ' кампаний. Влияние обнулено.');
+      }
+    }
+
+    // 2. Инициализируем новый список (V3)
     var excludedList;
-
-    var listIterator = AdsApp.excludedPlacementLists().withCondition("Name = '" + listName + "'").get();
+    var listIterator = AdsApp.excludedPlacementLists().withCondition("Name = '" + newListName + "'").get();
     if (listIterator.hasNext()) {
       excludedList = listIterator.next();
     } else {
-      excludedList = AdsApp.newExcludedPlacementListBuilder().withName(listName).build().getResult();
-      Logger.log('[BLACKLIST] Создан новый список исключений: ' + listName);
+      excludedList = AdsApp.newExcludedPlacementListBuilder().withName(newListName).build().getResult();
+      Logger.log('[BLACKLIST] Создан НОВЫЙ список исключений: ' + newListName);
     }
 
+    // 3. Привязываем V3 ко всем активным кампаниям
     var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').withCondition('CampaignType = DISPLAY').get();
     var campCount = 0;
     while (campaigns.hasNext()) {
@@ -221,7 +239,11 @@ function runMain(ACCOUNT_CONFIG) {
         try { camp.addExcludedPlacementList(excludedList); campCount++; } catch (e) {}
       }
     }
-    Logger.log('[BLACKLIST] Общий список привязан к ' + campCount + ' активным КМС кампаниям.');
+    Logger.log('[BLACKLIST] Список ' + newListName + ' привязан к ' + campCount + ' активным КМС кампаниям.');
+
+    // 4. Загрузка данных
+    var endpoint = '/rest/v1/placement_blacklist?select=placement&limit=10000';
+    var data = apiCall_('get', endpoint, null, null, CONFIG);
 
     var GAME_CATEGORIES = [
       'mobileappcategory::60008',
@@ -238,7 +260,7 @@ function runMain(ACCOUNT_CONFIG) {
         'Action': 'Add',
         'Customer ID': '',
         'Placement Exclusion List ID': '',
-        'Placement Exclusion List Name': listName,
+        'Placement Exclusion List Name': newListName,
         'Placement Exclusion': item
       });
       addedCount++;
@@ -252,7 +274,7 @@ function runMain(ACCOUNT_CONFIG) {
             'Action': 'Add',
             'Customer ID': '',
             'Placement Exclusion List ID': '',
-            'Placement Exclusion List Name': listName,
+            'Placement Exclusion List Name': newListName,
             'Placement Exclusion': item.placement
           });
           addedCount++;
@@ -281,7 +303,6 @@ function runMain(ACCOUNT_CONFIG) {
 
     var headers = { 'Authorization': 'Bearer ' + CONFIG.SUPABASE_KEY.replace(/\s/g, ''), 'Content-Type': 'application/json' };
     
-    // ДОБАВЛЕН ПАРАМЕТР ?uid= ДЛЯ ФИЛЬТРАЦИИ НА УРОВНЕ EDGE FUNCTION
     var fetchUrl = CONFIG.SUPABASE_URL + '/functions/v1/fetch-postbacks?uid=' + cleanId;
     Logger.log('[CONVERSIONS] GET Запрос к: ' + fetchUrl);
     
@@ -342,7 +363,6 @@ function runMain(ACCOUNT_CONFIG) {
       
       Logger.log('[CONVERSIONS] Отправка подтверждения в БД по ID: ' + JSON.stringify(uploadedIds));
       
-      // POST запрос уходит на базовый URL без query параметров
       var postUrl = CONFIG.SUPABASE_URL + '/functions/v1/fetch-postbacks';
       var postRes = UrlFetchApp.fetch(postUrl, { 
         method: 'post', 
@@ -414,3 +434,304 @@ function runMain(ACCOUNT_CONFIG) {
           Logger.log('[CREATE_AD] Нет активных групп объявлений КМС.');
           return;
         }
+
+        Logger.log('--------------------------------------------------');
+        Logger.log('[CREATE_AD] НАЧАЛО ОБРАБОТКИ ЗАДАНИЯ ID: ' + task.ad_id);
+        
+        var ts = new Date().getTime().toString().substring(7);
+        var loadedSqAssets = [];
+        var loadedRectAssets = [];
+
+        var rawSqUrls = (task.square_image_urls && task.square_image_urls.length > 0) ? task.square_image_urls : [task.square_image_url || task.img_square || 'https://example.com/1x1.jpg'];
+        var sqUrls = getUniqueUrls_(rawSqUrls);
+        
+        sqUrls.forEach(function(url, idx) {
+          try {
+            var blob = UrlFetchApp.fetch(url).getBlob();
+            var asset = AdsApp.adAssets().newImageAssetBuilder()
+              .withData(blob)
+              .withName('Sq_' + (task.ad_id || 'new').substring(0, 8) + '_' + ts + '_' + idx)
+              .build().getResult();
+            loadedSqAssets.push(asset);
+          } catch(e) {}
+        });
+
+        var rawRectUrls = (task.landscape_image_urls && task.landscape_image_urls.length > 0) ? task.landscape_image_urls : [task.rectangle_image_url || task.img_rect || 'https://example.com/1.91x1.jpg'];
+        var rectUrls = getUniqueUrls_(rawRectUrls);
+
+        rectUrls.forEach(function(url, idx) {
+          try {
+            var blob = UrlFetchApp.fetch(url).getBlob();
+            var asset = AdsApp.adAssets().newImageAssetBuilder()
+              .withData(blob)
+              .withName('Rect_' + (task.ad_id || 'new').substring(0, 8) + '_' + ts + '_' + idx)
+              .build().getResult();
+            loadedRectAssets.push(asset);
+          } catch(e) {}
+        });
+
+        loadedSqAssets = getUniqueAssets_(loadedSqAssets);
+        loadedRectAssets = getUniqueAssets_(loadedRectAssets);
+
+        if (loadedSqAssets.length === 0 || loadedRectAssets.length === 0) {
+          throw new Error('Не удалось загрузить картинки по предоставленным ссылкам.');
+        }
+
+        Logger.log('[CREATE_AD] Загружено ' + loadedSqAssets.length + ' кв. и ' + loadedRectAssets.length + ' гор. картинок. Синхронизация (5 сек)...');
+        Utilities.sleep(5000);
+
+        var groupCount = 0;
+
+        while (agIterator.hasNext()) {
+          var adGroup = agIterator.next();
+          
+          var bName = getSafeString_(task.business_name, 25, 'My Business');
+          var fUrl  = String(task.final_url || 'https://example.com').trim();
+          if (fUrl.indexOf('http') !== 0) fUrl = 'https://' + fUrl; 
+          var lHead = getSafeString_(task.long_headline, 90, 'Длинный заголовок по умолчанию');
+
+          var adBuilder = adGroup.newAd().responsiveDisplayAdBuilder()
+            .withBusinessName(bName)
+            .withFinalUrl(fUrl)
+            .withLongHeadline(lHead);
+
+          var headlinesList = (task.headlines && task.headlines.length > 0) ? task.headlines : [task.headline];
+          var uniqueH = getUniqueUrls_(headlinesList);
+          for (var h = 0; h < Math.min(uniqueH.length, 5); h++) {
+            var safeH = getSafeString_(uniqueH[h], 30, 'Заголовок ' + (h+1));
+            adBuilder.addHeadline(safeH);
+          }
+
+          var descList = (task.descriptions && task.descriptions.length > 0) ? task.descriptions : [task.description];
+          var uniqueD = getUniqueUrls_(descList);
+          for (var d = 0; d < Math.min(uniqueD.length, 5); d++) {
+            var safeD = getSafeString_(uniqueD[d], 90, 'Описание ' + (d+1));
+            adBuilder.addDescription(safeD);
+          }
+
+          loadedSqAssets.forEach(function(asset) { adBuilder.addSquareMarketingImage(asset); });
+          loadedRectAssets.forEach(function(asset) { adBuilder.addMarketingImage(asset); });
+
+          var adOperation = adBuilder.build();
+          
+          if (adOperation.isSuccessful()) {
+             var newAd = adOperation.getResult();
+             Logger.log('[CREATE_AD] ✅ Объявление собрано в группе ' + adGroup.getName() + ' (ID: ' + newAd.getId() + ')');
+             groupCount++;
+          } else {
+             Logger.log('[CREATE_AD] ❌ Ошибка сборки в группе ' + adGroup.getName() + ': ' + adOperation.getErrors().join(', '));
+          }
+        }
+
+        lines.push('📌 Создано объявление (Групп: ' + groupCount + ')');
+        
+        deleteSupabase_(CONFIG.TABLE_ADS, 'ad_id=eq.' + encodeURIComponent(task.ad_id), CONFIG);
+        createdCount++;
+        Logger.log('[CREATE_AD] ✅ Успешно. Pending-запись удалена: ' + task.ad_id);
+      } catch(e) { 
+        Logger.log('[CREATE_AD] ⚠️ Ошибка задания ' + task.ad_id + ': ' + e.message);
+        lines.push('⚠️ Ошибка (' + task.ad_id.substring(0,8) + '): ' + e.message); 
+        
+        patchSupabase_(CONFIG.TABLE_ADS, { 
+          needs_create: false, 
+          error_message: e.message.substring(0, 500),
+          error_at: new Date().toISOString()
+        }, 'ad_id=eq.' + encodeURIComponent(task.ad_id), CONFIG);
+      }
+    });
+
+    if (lines.length > 0) tgSend_('✅ <b>Create Ads</b>\nАкк: <code>' + myId + '</code>\nУспешно создано: ' + createdCount + '\n\n' + lines.join('\n'), CONFIG);
+  }
+
+  /* ====================== РЕЕСТРЫ И СИНХРОНИЗАЦИЯ ====================== */
+
+  function updateAccountRegistry_(acc, CONFIG) {
+    Logger.log('[REGISTRY] Сохранение статистики аккаунта...');
+    var cleanId = acc.getCustomerId().replace(/-/g, '');
+    var activeBid = 0; var balance = 0;
+    try {
+      var ag = AdsApp.adGroups().withCondition('Status = ENABLED').withLimit(1).get();
+      if (ag.hasNext()) activeBid = ag.next().bidding().getCpc();
+      var bo = AdsApp.budgetOrders().get();
+      if (bo.hasNext()) balance = bo.next().getSpendingLimit() - acc.getStatsFor('ALL_TIME').getCost();
+    } catch(e) {}
+
+    var payload = {
+      uid: cleanId, name: acc.getName(), email: CONFIG.EMAIL,
+      today_cost: acc.getStatsFor('TODAY').getCost(), all_cost: acc.getStatsFor('ALL_TIME').getCost(),
+      current_cpc: activeBid, balance: balance, updated_at: new Date().toISOString()
+    };
+    
+    apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS, payload, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
+    Logger.log('[REGISTRY] Статистика успешно отправлена.');
+  }
+
+  function syncAdsToRegistry_(myId, CONFIG) {
+    Logger.log('[SYNC_ADS] Выгрузка текущих объявлений в БД...');
+    var cleanId = myId.replace(/-/g, '');
+    var ads = AdsApp.ads().withCondition('CampaignType = DISPLAY').withCondition('Status IN [ENABLED, PAUSED]').get();
+    var batch = [];
+    var totalSynced = 0;
+
+    while (ads.hasNext()) {
+      var ad = ads.next();
+      var stats = ad.getStatsFor('TODAY');
+      var headlines = (typeof ad.getName === 'function') ? ad.getName() : 'Ad #' + ad.getId();
+      var adStatus = ad.isPaused() ? 'PAUSED' : 'ENABLED';
+      
+      var policyStatus = 'UNKNOWN';
+      try { 
+        policyStatus = ad.getPolicyApprovalStatus(); 
+        if (policyStatus === 'DISAPPROVED' || policyStatus === 'APPROVED_LIMITED') {
+          var topics = ad.getPolicyTopics();
+          if (topics && topics.length > 0) {
+            var reasons = [];
+            for (var t = 0; t < topics.length; t++) { reasons.push(topics[t].getId()); }
+            if (reasons.length > 0) policyStatus += ' (' + reasons.join(', ') + ')';
+          }
+        }
+      } catch(e) {}
+
+      batch.push({
+        ad_id: ad.getId().toString(), account_id: cleanId, campaign_name: ad.getCampaign().getName(),
+        type: ad.getType(), headline: headlines.split(' | ')[0],
+        final_url: ad.urls().getFinalUrl() || '', clicks: stats.getClicks(), cost: stats.getCost(),
+        status: adStatus, policy_status: policyStatus, updated_at: new Date().toISOString()
+      });
+
+      if (batch.length >= 50) { 
+        apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ADS, batch, { 'Prefer': 'resolution=merge-duplicates, return=representation' }, CONFIG); 
+        totalSynced += batch.length;
+        batch = []; 
+      }
+    }
+    if (batch.length > 0) {
+      apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ADS, batch, { 'Prefer': 'resolution=merge-duplicates, return=representation' }, CONFIG);
+      totalSynced += batch.length;
+    }
+    Logger.log('[SYNC_ADS] Выгружено ' + totalSynced + ' объявлений.');
+  }
+
+  function syncBidsFromRegistry_(myId, CONFIG) {
+    Logger.log('[BIDS] Проверка новых ставок в БД...');
+    var cleanId = myId.replace(/-/g, '');
+    var data = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS + '?uid=eq.' + cleanId + '&select=target_cpc,needs_bid_sync', null, null, CONFIG);
+    
+    if (!data || data.length === 0 || !data[0].needs_bid_sync) {
+      Logger.log('[BIDS] Изменение ставки не требуется.');
+      return;
+    }
+
+    var target = data[0].target_cpc;
+    Logger.log('[BIDS] Применяется новая ставка: ' + target);
+    var ags = AdsApp.adGroups().withCondition('Status = ENABLED').get();
+    while (ags.hasNext()) ags.next().bidding().setCpc(target);
+    
+    patchSupabase_(CONFIG.TABLE_ACCOUNTS, { needs_bid_sync: false }, 'uid=eq.' + cleanId, CONFIG);
+  }
+
+  function syncAdEditsFromRegistry_(myId, CONFIG) {
+    Logger.log('[AD_EDITS] Проверка изменений статусов/ссылок/удалений...');
+    var cleanId = myId.replace(/-/g, '');
+    var edits = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ADS + '?account_id=eq.' + cleanId + '&needs_sync=eq.true', null, null, CONFIG);
+    
+    if (!edits || edits.length === 0) {
+      Logger.log('[AD_EDITS] Заданий на изменение нет.');
+      return;
+    }
+
+    Logger.log('[AD_EDITS] Найдено заданий: ' + edits.length);
+    edits.forEach(function(edit) {
+      var adIterator = AdsApp.ads().withCondition('Id = ' + edit.ad_id).get();
+      
+      if (!adIterator.hasNext()) {
+        if (edit.target_status === 'REMOVED') {
+          Logger.log('[AD_EDITS] 🗑️ Объявление ' + edit.ad_id + ' не найдено в аккаунте. Очищаем БД.');
+          deleteSupabase_(CONFIG.TABLE_ADS, 'ad_id=eq.' + edit.ad_id, CONFIG);
+        } else {
+          Logger.log('[AD_EDITS] Объявление ' + edit.ad_id + ' не найдено. Сброс флага needs_sync.');
+          patchSupabase_(CONFIG.TABLE_ADS, { needs_sync: false, edit_final_url: null, target_status: null }, 'ad_id=eq.' + edit.ad_id, CONFIG);
+        }
+        return;
+      }
+      
+      var ad = adIterator.next();
+
+      if (edit.target_status === 'REMOVED') {
+        ad.remove();
+        Logger.log('[AD_EDITS] 🗑️ Объявление ' + edit.ad_id + ' физически удалено.');
+        deleteSupabase_(CONFIG.TABLE_ADS, 'ad_id=eq.' + edit.ad_id, CONFIG);
+        return;
+      }
+
+      if (edit.target_status === 'ENABLED') { ad.enable(); Logger.log('[AD_EDITS] Включено: ' + edit.ad_id); }
+      if (edit.target_status === 'PAUSED')  { ad.pause();  Logger.log('[AD_EDITS] Остановлено: ' + edit.ad_id); }
+      if (edit.edit_final_url) { ad.urls().setFinalUrl(edit.edit_final_url); Logger.log('[AD_EDITS] Ссылка обновлена: ' + edit.ad_id); }
+
+      patchSupabase_(CONFIG.TABLE_ADS, { needs_sync: false, edit_final_url: null, target_status: null }, 'ad_id=eq.' + edit.ad_id, CONFIG);
+    });
+  }
+
+  function checkSafetyLimitsStrict_(acc, CONFIG) {
+    var todayCost  = acc.getStatsFor('TODAY').getCost();
+    var totalLimit = CONFIG.SAFETY_LIMIT + CONFIG.EXTRA_LIMIT;
+    var balance    = 0;
+
+    try {
+      var bo = AdsApp.budgetOrders().get();
+      if (bo.hasNext()) balance = bo.next().getSpendingLimit() - acc.getStatsFor('ALL_TIME').getCost();
+    } catch(e) {}
+
+    if (todayCost >= totalLimit || (balance !== 0 && balance <= -totalLimit)) {
+      var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').get();
+      while (campaigns.hasNext()) {
+        var camp = campaigns.next();
+        var ads  = camp.ads().get();
+        while (ads.hasNext()) { ads.next().remove(); }
+        camp.pause();
+      }
+      tgSend_('🛑 <b>CRITICAL STOP</b>\nAcc: ' + acc.getCustomerId() + '\nAds DELETED (' + totalLimit + '$).', CONFIG);
+    }
+  }
+
+  /* ====================== API CORE ====================== */
+
+  function apiCall_(method, endpoint, payload, headersExtra, CONFIG) {
+    var key = CONFIG.SUPABASE_KEY.replace(/\s/g, '');
+    var headers = { 'apikey': key, 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' };
+    if (headersExtra) { for (var h in headersExtra) headers[h] = headersExtra[h]; }
+
+    var res = UrlFetchApp.fetch(CONFIG.SUPABASE_URL + endpoint, { method: method, headers: headers, payload: payload ? JSON.stringify(payload) : null, muteHttpExceptions: true });
+    var code = res.getResponseCode();
+    var text = res.getContentText();
+    
+    if (code !== 200 && code !== 201 && code !== 204) {
+      Logger.log('[API_ERROR] Body: ' + text);
+    }
+    return (method === 'get' && code === 200 && text.length > 0) ? JSON.parse(text) : null;
+  }
+
+  function patchSupabase_(table, data, query, CONFIG) {
+    var key = CONFIG.SUPABASE_KEY.replace(/\s/g, '');
+    var endpoint = '/rest/v1/' + table + '?' + query;
+    UrlFetchApp.fetch(CONFIG.SUPABASE_URL + endpoint, {
+      method: 'patch', contentType: 'application/json', headers: { 'apikey': key, 'Authorization': 'Bearer ' + key },
+      payload: JSON.stringify(data), muteHttpExceptions: true
+    });
+  }
+
+  function deleteSupabase_(table, query, CONFIG) {
+    var key = CONFIG.SUPABASE_KEY.replace(/\s/g, '');
+    var endpoint = '/rest/v1/' + table + '?' + query;
+    UrlFetchApp.fetch(CONFIG.SUPABASE_URL + endpoint, {
+      method: 'delete', headers: { 'apikey': key, 'Authorization': 'Bearer ' + key }, muteHttpExceptions: true
+    });
+  }
+
+  function tgSend_(txt, CONFIG) {
+    try { UrlFetchApp.fetch('https://api.telegram.org/bot' + CONFIG.TG_TOKEN + '/sendMessage', { method: 'post', contentType: 'application/json', payload: JSON.stringify({ chat_id: CONFIG.TG_CHAT_ID, text: txt, parse_mode: 'HTML' }), muteHttpExceptions: true }); } catch(e) {}
+  }
+
+  function logDivider_(l) { Logger.log('=== ' + l + ' ==='); }
+
+} // конец runMain()
