@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.45 - Add News Topic Everywhere, No Deletions)
+ * Google Ads Master Script (v15.46 - Smart Add News Topic)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -31,7 +31,7 @@ function runMain(ACCOUNT_CONFIG) {
   try { checkSafetyLimitsStrict_(acc, CONFIG); }   catch (e) { Logger.log('[ERR][SAFETY] ' + e.message); }
   
   try { maybeCreateDefaultAdGroup_(); }            catch (e) { Logger.log('[ERR][SETUP_AG] ' + e.message); }
-  try { ensureNewsTopicInAllGroups_(); }           catch (e) { Logger.log('[ERR][ADD_NEWS] ' + e.message); }
+  try { ensureNewsTopicInAllGroups_(); }           catch (e) { Logger.log('[ERR][TOPICS] ' + e.message); }
 
   try { syncBidsFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][BIDS] ' + e.message); }
   try { syncAdEditsFromRegistry_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][AD_EDITS] ' + e.message); }
@@ -102,20 +102,34 @@ function runMain(ACCOUNT_CONFIG) {
   }
 
   function ensureNewsTopicInAllGroups_() {
-    Logger.log('[SETUP] Проверка наличия топика News во всех активных группах...');
+    Logger.log('[TOPICS] Проверка наличия топика News (ID 16) во всех активных группах...');
     var adGroups = AdsApp.adGroups().withCondition('Status = ENABLED').get();
-    var processedCount = 0;
-    
+    var addedCount = 0;
+    var existCount = 0;
+
     while (adGroups.hasNext()) {
       var ag = adGroups.next();
       try {
+        // Проверяем, есть ли уже топик 16 в этой группе
+        var existingTopics = ag.display().topics().withCondition('TopicId = 16').get();
+        if (existingTopics.hasNext()) {
+          existCount++;
+          continue; // Уже есть, идем дальше
+        }
+
+        // Если нет, добавляем
         var op = ag.display().newTopicBuilder().withTopicId(16).build();
         if (op.isSuccessful()) {
-          processedCount++;
+          Logger.log('[TOPICS] ➕ Топик News добавлен в группу: ' + ag.getName());
+          addedCount++;
+        } else {
+          Logger.log('[TOPICS] ❌ Ошибка добавления в группу ' + ag.getName() + ': ' + op.getErrors().join(', '));
         }
-      } catch(e) {}
+      } catch(e) {
+        Logger.log('[TOPICS] ⚠️ Ошибка при работе с группой ' + ag.getName() + ': ' + e.message);
+      }
     }
-    Logger.log('[SETUP] Топик News добавлен (или уже присутствовал) в ' + processedCount + ' активных групп.');
+    Logger.log('[TOPICS] Готово. Добавлено в новых групп: ' + addedCount + '. Уже присутствовал: ' + existCount + '.');
   }
 
   /* ====================== ИСКЛЮЧЕНИЕ YOUTUBE ====================== */
