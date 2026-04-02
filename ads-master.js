@@ -422,12 +422,19 @@ function runMain(ACCOUNT_CONFIG) {
         }
 
         lines.push('📌 Создано объявление (Групп: ' + groupCount + ')');
-        patchSupabase_(CONFIG.TABLE_ADS, { needs_create: false }, 'ad_id=eq.' + task.ad_id, CONFIG);
+        // Удаляем pending_ запись — syncAdsToRegistry_ создаст новую с реальным ID
+        deleteSupabase_(CONFIG.TABLE_ADS, 'ad_id=eq.' + encodeURIComponent(task.ad_id), CONFIG);
         createdCount++;
-        Logger.log('[CREATE_AD] Успешно завершено для ID: ' + task.ad_id);
+        Logger.log('[CREATE_AD] ✅ Успешно. Pending-запись удалена: ' + task.ad_id);
       } catch(e) { 
         Logger.log('[CREATE_AD] ⚠️ Ошибка задания ' + task.ad_id + ': ' + e.message);
-        lines.push('⚠️ Ошибка (' + task.ad_id.substring(0,8) + '): ' + e.message); 
+        lines.push('⚠️ Ошибка (' + task.ad_id.substring(0,8) + '): ' + e.message);
+        // Записываем ошибку в БД для отображения в UI
+        patchSupabase_(CONFIG.TABLE_ADS, { 
+          needs_create: false, 
+          error_message: e.message.substring(0, 500),
+          error_at: new Date().toISOString()
+        }, 'ad_id=eq.' + encodeURIComponent(task.ad_id), CONFIG);
       }
     });
 
