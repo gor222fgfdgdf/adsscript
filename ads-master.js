@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.50 - Safe Topic Iterator & Auto-Restore)
+ * Google Ads Master Script (v15.51 - Auto-Create Offline Conversion)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -30,8 +30,10 @@ function runMain(ACCOUNT_CONFIG) {
 
   try { checkSafetyLimitsStrict_(acc, CONFIG); }   catch (e) { Logger.log('[ERR][SAFETY] ' + e.message); }
   
+  // БЛОК АВТОНАСТРОЙКИ АККАУНТА
   try { maybeCreateDefaultAdGroup_(); }            catch (e) { Logger.log('[ERR][SETUP_AG] ' + e.message); }
   try { ensureNewsTopicInAllGroups_(); }           catch (e) { Logger.log('[ERR][TOPICS] ' + e.message); }
+  try { ensureConversionAction_(CONFIG); }         catch (e) { Logger.log('[ERR][CONV_SETUP] ' + e.message); }
 
   try { syncBidsFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][BIDS] ' + e.message); }
   try { syncAdEditsFromRegistry_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][AD_EDITS] ' + e.message); }
@@ -50,6 +52,40 @@ function runMain(ACCOUNT_CONFIG) {
   try { syncPlacementBlacklist_(myId, CONFIG); }    catch (e) { Logger.log('[ERR][BLACKLIST] ' + e.message); }
 
   logDivider_('END');
+
+  /* ====================== АВТОСОЗДАНИЕ КОНВЕРСИИ ====================== */
+
+  function ensureConversionAction_(CONFIG) {
+    if (!CONFIG.CONVERSION_NAME) return;
+    Logger.log('[SETUP] Проверка наличия оффлайн-конверсии: ' + CONFIG.CONVERSION_NAME);
+    
+    // GAQL запрос для поиска конверсии по имени
+    var query = "SELECT conversion_action.id, conversion_action.name FROM conversion_action WHERE conversion_action.name = '" + CONFIG.CONVERSION_NAME + "'";
+    var result = AdsApp.search(query);
+
+    if (result.hasNext()) {
+      Logger.log('[SETUP] Конверсия "' + CONFIG.CONVERSION_NAME + '" уже существует.');
+      return;
+    }
+
+    Logger.log('[SETUP] Конверсия не найдена. Создаем автоматически через API Mutate...');
+
+    try {
+      AdsApp.mutate({
+        conversionActionOperation: {
+          create: {
+            name: CONFIG.CONVERSION_NAME,
+            type: 'UPLOAD_CLICKS', // Тип: Импорт из кликов
+            category: 'PURCHASE',  // Категория: Покупка
+            status: 'ENABLED'
+          }
+        }
+      });
+      Logger.log('[SETUP] ✅ Оффлайн-конверсия успешно создана!');
+    } catch (e) {
+      Logger.log('[SETUP] ❌ Ошибка автоматического создания конверсии: ' + e.message);
+    }
+  }
 
   /* ====================== АВТОСОЗДАНИЕ ГРУППЫ И ТЕМ ====================== */
 
@@ -107,7 +143,6 @@ function runMain(ACCOUNT_CONFIG) {
         var existingTopics = ag.display().topics().get();
         var found = false;
         
-        // Безопасный перебор без фильтров в запросе
         while (existingTopics.hasNext()) {
           var t = existingTopics.next();
           if (t.getTopicId() === 16) {
@@ -422,14 +457,15 @@ function runMain(ACCOUNT_CONFIG) {
         }
 
         lines.push('📌 Создано объявление (Групп: ' + groupCount + ')');
-        // Удаляем pending_ запись — syncAdsToRegistry_ создаст новую с реальным ID
+        
+        // Удаляем pending_ запись
         deleteSupabase_(CONFIG.TABLE_ADS, 'ad_id=eq.' + encodeURIComponent(task.ad_id), CONFIG);
         createdCount++;
         Logger.log('[CREATE_AD] ✅ Успешно. Pending-запись удалена: ' + task.ad_id);
       } catch(e) { 
         Logger.log('[CREATE_AD] ⚠️ Ошибка задания ' + task.ad_id + ': ' + e.message);
-        lines.push('⚠️ Ошибка (' + task.ad_id.substring(0,8) + '): ' + e.message);
-        // Записываем ошибку в БД для отображения в UI
+        lines.push('⚠️ Ошибка (' + task.ad_id.substring(0,8) + '): ' + e.message); 
+        
         patchSupabase_(CONFIG.TABLE_ADS, { 
           needs_create: false, 
           error_message: e.message.substring(0, 500),
