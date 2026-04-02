@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.44 - Full Tracing & Bulletproof YouTube Exclusion)
+ * Google Ads Master Script (v15.45 - Add News Topic Everywhere, No Deletions)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -31,7 +31,7 @@ function runMain(ACCOUNT_CONFIG) {
   try { checkSafetyLimitsStrict_(acc, CONFIG); }   catch (e) { Logger.log('[ERR][SAFETY] ' + e.message); }
   
   try { maybeCreateDefaultAdGroup_(); }            catch (e) { Logger.log('[ERR][SETUP_AG] ' + e.message); }
-  try { enforceNewsTopicOnly_(); }                 catch (e) { Logger.log('[ERR][TOPIC_CLEANUP] ' + e.message); }
+  try { ensureNewsTopicInAllGroups_(); }           catch (e) { Logger.log('[ERR][ADD_NEWS] ' + e.message); }
 
   try { syncBidsFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][BIDS] ' + e.message); }
   try { syncAdEditsFromRegistry_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][AD_EDITS] ' + e.message); }
@@ -101,22 +101,21 @@ function runMain(ACCOUNT_CONFIG) {
     Logger.log('[SETUP] ✅ Базовая группа и темы успешно настроены.');
   }
 
-  function enforceNewsTopicOnly_() {
-    Logger.log('[TOPIC_CLEANUP] Проверка тем таргетинга на соответствие "News"...');
-    var topics = AdsApp.display().topics().withCondition('Status IN [ENABLED, PAUSED]').get();
-    var removedCount = 0;
-    while (topics.hasNext()) {
-      var topic = topics.next();
-      if (topic.getTopicId() !== 16) {
-        topic.remove();
-        removedCount++;
-      }
+  function ensureNewsTopicInAllGroups_() {
+    Logger.log('[SETUP] Проверка наличия топика News во всех активных группах...');
+    var adGroups = AdsApp.adGroups().withCondition('Status = ENABLED').get();
+    var processedCount = 0;
+    
+    while (adGroups.hasNext()) {
+      var ag = adGroups.next();
+      try {
+        var op = ag.display().newTopicBuilder().withTopicId(16).build();
+        if (op.isSuccessful()) {
+          processedCount++;
+        }
+      } catch(e) {}
     }
-    if (removedCount > 0) {
-      Logger.log('[TOPIC_CLEANUP] 🧹 Удалено ' + removedCount + ' лишних тем (оставлен только News).');
-    } else {
-      Logger.log('[TOPIC_CLEANUP] Лишних тем не найдено.');
-    }
+    Logger.log('[SETUP] Топик News добавлен (или уже присутствовал) в ' + processedCount + ' активных групп.');
   }
 
   /* ====================== ИСКЛЮЧЕНИЕ YOUTUBE ====================== */
@@ -358,10 +357,12 @@ function runMain(ACCOUNT_CONFIG) {
         loadedRectAssets = getUniqueAssets_(loadedRectAssets);
 
         if (loadedSqAssets.length === 0 || loadedRectAssets.length === 0) {
-          throw new Error('Не удалось загрузить картинки');
+          throw new Error('Не удалось загрузить картинки по предоставленным ссылкам.');
         }
 
+        Logger.log('[CREATE_AD] Загружено ' + loadedSqAssets.length + ' кв. и ' + loadedRectAssets.length + ' гор. картинок. Синхронизация (5 сек)...');
         Utilities.sleep(5000);
+
         var groupCount = 0;
 
         while (agIterator.hasNext()) {
@@ -397,7 +398,11 @@ function runMain(ACCOUNT_CONFIG) {
           var adOperation = adBuilder.build();
           
           if (adOperation.isSuccessful()) {
+             var newAd = adOperation.getResult();
+             Logger.log('[CREATE_AD] ✅ Объявление собрано в группе ' + adGroup.getName() + ' (ID: ' + newAd.getId() + ')');
              groupCount++;
+          } else {
+             Logger.log('[CREATE_AD] ❌ Ошибка сборки в группе ' + adGroup.getName() + ': ' + adOperation.getErrors().join(', '));
           }
         }
 
@@ -406,8 +411,8 @@ function runMain(ACCOUNT_CONFIG) {
         createdCount++;
         Logger.log('[CREATE_AD] Успешно завершено для ID: ' + task.ad_id);
       } catch(e) { 
+        Logger.log('[CREATE_AD] ⚠️ Ошибка задания ' + task.ad_id + ': ' + e.message);
         lines.push('⚠️ Ошибка (' + task.ad_id.substring(0,8) + '): ' + e.message); 
-        Logger.log('[CREATE_AD] ⚠️ Ошибка: ' + e.message);
       }
     });
 
@@ -576,6 +581,9 @@ function runMain(ACCOUNT_CONFIG) {
     var code = res.getResponseCode();
     var text = res.getContentText();
     
+    if (code !== 200 && code !== 201 && code !== 204) {
+      Logger.log('[API_ERROR] Body: ' + text);
+    }
     return (method === 'get' && code === 200 && text.length > 0) ? JSON.parse(text) : null;
   }
 
