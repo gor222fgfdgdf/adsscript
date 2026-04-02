@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.49 - Bulletproof News Topic Ensure)
+ * Google Ads Master Script (v15.50 - Safe Topic Iterator & Auto-Restore)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -65,7 +65,6 @@ function runMain(ACCOUNT_CONFIG) {
     var CPC_BID = 0.02;
     var AD_GROUP_NAME = 'Topic_All';
 
-    var TOPICS = [{ name: 'News', resourceName: 'topicConstants/16' }];
     var EXCLUDE_AGE_RANGES = [ 'AGE_RANGE_18_24', 'AGE_RANGE_25_34', 'AGE_RANGE_35_44', 'AGE_RANGE_45_54', 'AGE_RANGE_UNDETERMINED' ];
 
     var customerId = AdsApp.currentAccount().getCustomerId().replace(/-/g, '');
@@ -83,11 +82,6 @@ function runMain(ACCOUNT_CONFIG) {
 
     var adGroup = adGroupResult.getResult();
 
-    for (var i = 0; i < TOPICS.length; i++) {
-      var topicId = parseInt(TOPICS[i].resourceName.split('/')[1], 10); 
-      adGroup.display().newTopicBuilder().withTopicId(topicId).build();
-    }
-
     var adGroupResourceName = 'customers/' + customerId + '/adGroups/' + adGroup.getId();
     for (var a = 0; a < EXCLUDE_AGE_RANGES.length; a++) {
       try {
@@ -98,11 +92,11 @@ function runMain(ACCOUNT_CONFIG) {
         });
       } catch(e) {}
     }
-    Logger.log('[SETUP] ✅ Базовая группа и темы успешно настроены.');
+    Logger.log('[SETUP] ✅ Базовая группа успешно настроена.');
   }
 
   function ensureNewsTopicInAllGroups_() {
-    Logger.log('[TOPICS] Страховочная проверка и добавление топика News (ID 16) во все активные группы...');
+    Logger.log('[TOPICS] Проверка наличия топика News (ID 16) во всех активных группах...');
     var adGroups = AdsApp.adGroups().withCondition('Status = ENABLED').get();
     var addedCount = 0;
     var restoredCount = 0;
@@ -110,30 +104,35 @@ function runMain(ACCOUNT_CONFIG) {
     while (adGroups.hasNext()) {
       var ag = adGroups.next();
       try {
-        // 1. Проверяем и восстанавливаем, если он был удален/на паузе
         var existingTopics = ag.display().topics().get();
+        var found = false;
+        
+        // Безопасный перебор без фильтров в запросе
         while (existingTopics.hasNext()) {
           var t = existingTopics.next();
           if (t.getTopicId() === 16) {
+            found = true;
             if (t.isPaused() || !t.isEnabled()) {
               t.enable();
               restoredCount++;
-              Logger.log('[TOPICS] 🔄 Топик News восстановлен в группе: ' + ag.getName());
+              Logger.log('[TOPICS] 🔄 Топик News восстановлен/включен в группе: ' + ag.getName());
             }
             break;
           }
         }
 
-        // 2. Страховочное принудительное создание (API Google проигнорирует, если он уже есть)
-        var op = ag.display().newTopicBuilder().withTopicId(16).build();
-        if (op.isSuccessful()) {
-          addedCount++;
+        if (!found) {
+          var op = ag.display().newTopicBuilder().withTopicId(16).build();
+          if (op.isSuccessful()) {
+            Logger.log('[TOPICS] ➕ Топик News добавлен в группу: ' + ag.getName());
+            addedCount++;
+          }
         }
       } catch(e) {
         Logger.log('[TOPICS] ⚠️ Ошибка при работе с группой ' + ag.getName() + ': ' + e.message);
       }
     }
-    Logger.log('[TOPICS] Готово. Команда создания отправлена ' + addedCount + ' раз. Восстановлено из удаленных: ' + restoredCount + '.');
+    Logger.log('[TOPICS] Готово. Создано новых: ' + addedCount + '. Восстановлено: ' + restoredCount + '.');
   }
 
   /* ====================== ИСКЛЮЧЕНИЕ YOUTUBE ====================== */
@@ -151,11 +150,9 @@ function runMain(ACCOUNT_CONFIG) {
         if (op.isSuccessful()) {
           Logger.log('[YOUTUBE] ✅ youtube.com успешно исключен на уровне кампании: ' + camp.getName());
         } else {
-          Logger.log('[YOUTUBE] ⚠️ Ошибка исключения в кампании: ' + op.getErrors().join(', '));
           fallbackYoutubeToAdGroups_(camp);
         }
       } catch (e) {
-        Logger.log('[YOUTUBE] ⚠️ Метод кампании не сработал (' + e.message + '). Исключаем через группы...');
         fallbackYoutubeToAdGroups_(camp);
       }
     }
@@ -172,7 +169,7 @@ function runMain(ACCOUNT_CONFIG) {
         if (op.isSuccessful()) agCount++;
       } catch(e) {}
     }
-    Logger.log('[YOUTUBE] ↪️ Фолбэк: youtube.com исключен в ' + agCount + ' группах объявлений.');
+    if (agCount > 0) Logger.log('[YOUTUBE] ↪️ Фолбэк: youtube.com исключен в ' + agCount + ' группах объявлений.');
   }
 
   /* ====================== GLOBAL BLACKLIST ====================== */
