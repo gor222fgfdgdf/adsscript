@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.53 - Hardcore YouTube Exclusions)
+ * Google Ads Master Script (v15.58 - Broad Targeting & Remove All Topics)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -32,8 +32,7 @@ function runMain(ACCOUNT_CONFIG) {
   
   // БЛОК АВТОНАСТРОЙКИ АККАУНТА
   try { maybeCreateDefaultAdGroup_(); }            catch (e) { Logger.log('[ERR][SETUP_AG] ' + e.message); }
-  try { ensureNewsTopicInAllGroups_(); }           catch (e) { Logger.log('[ERR][TOPICS] ' + e.message); }
-  try { excludeGamesTopic_(); }                    catch (e) { Logger.log('[ERR][EXCLUDE_GAMES] ' + e.message); }
+  try { removeAllTopics_(); }                      catch (e) { Logger.log('[ERR][TOPIC_CLEANUP] ' + e.message); }
   try { ensureConversionAction_(CONFIG); }         catch (e) { Logger.log('[ERR][CONV_SETUP] ' + e.message); }
 
   try { syncBidsFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][BIDS] ' + e.message); }
@@ -86,7 +85,7 @@ function runMain(ACCOUNT_CONFIG) {
     }
   }
 
-  /* ====================== АВТОСОЗДАНИЕ ГРУППЫ И ТЕМ ====================== */
+  /* ====================== АВТОСОЗДАНИЕ ГРУППЫ И ОЧИСТКА ТЕМ ====================== */
 
   function maybeCreateDefaultAdGroup_() {
     Logger.log('[SETUP] Проверка наличия групп объявлений...');
@@ -127,84 +126,33 @@ function runMain(ACCOUNT_CONFIG) {
         });
       } catch(e) {}
     }
-    Logger.log('[SETUP] ✅ Базовая группа успешно настроена.');
+    Logger.log('[SETUP] ✅ Базовая группа (широкая) успешно настроена.');
   }
 
-  function ensureNewsTopicInAllGroups_() {
-    Logger.log('[TOPICS] Проверка наличия топика News (ID 16) во всех активных группах...');
+  function removeAllTopics_() {
+    Logger.log('[TOPICS] Удаление всех тем таргетинга для перехода на широкую аудиторию...');
     var adGroups = AdsApp.adGroups().withCondition('Status = ENABLED').get();
-    var addedCount = 0;
-    var restoredCount = 0;
+    var removedCount = 0;
 
     while (adGroups.hasNext()) {
       var ag = adGroups.next();
       try {
-        var existingTopics = ag.display().topics().get();
-        var found = false;
-        
-        while (existingTopics.hasNext()) {
-          var t = existingTopics.next();
-          if (t.getTopicId() === 16) {
-            found = true;
-            if (t.isPaused() || !t.isEnabled()) {
-              t.enable();
-              restoredCount++;
-              Logger.log('[TOPICS] 🔄 Топик News восстановлен/включен в группе: ' + ag.getName());
-            }
-            break;
-          }
-        }
-
-        if (!found) {
-          var op = ag.display().newTopicBuilder().withTopicId(16).build();
-          if (op.isSuccessful()) {
-            Logger.log('[TOPICS] ➕ Топик News добавлен в группу: ' + ag.getName());
-            addedCount++;
-          }
+        var topics = ag.display().topics().get();
+        while (topics.hasNext()) {
+          var t = topics.next();
+          t.remove();
+          removedCount++;
         }
       } catch(e) {
-        Logger.log('[TOPICS] ⚠️ Ошибка при работе с группой ' + ag.getName() + ': ' + e.message);
+        Logger.log('[TOPICS] ⚠️ Ошибка при очистке тем в группе ' + ag.getName() + ': ' + e.message);
       }
     }
-    Logger.log('[TOPICS] Готово. Создано новых: ' + addedCount + '. Восстановлено: ' + restoredCount + '.');
-  }
-
-  /* ====================== ИСКЛЮЧЕНИЕ GAMES ====================== */
-
-  function excludeGamesTopic_() {
-    Logger.log('[GAMES] Проверка исключения топика Игры (ID 8)...');
-    var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').withCondition('CampaignType = DISPLAY').get();
-    var campCount = 0;
     
-    while (campaigns.hasNext()) {
-      var camp = campaigns.next();
-      try {
-        var op = camp.display().newTopicBuilder().withTopicId(8).exclude();
-        if (op.isSuccessful()) {
-          campCount++;
-        } else {
-          fallbackExcludeGamesToAdGroups_(camp);
-        }
-      } catch (e) {
-        fallbackExcludeGamesToAdGroups_(camp);
-      }
+    if (removedCount > 0) {
+      Logger.log('[TOPICS] ✅ Успешно удалено тем таргетинга: ' + removedCount);
+    } else {
+      Logger.log('[TOPICS] Темы таргетинга не найдены (уже широкая аудитория).');
     }
-    if (campCount > 0) {
-      Logger.log('[GAMES] ✅ Топик Игры исключен на уровне ' + campCount + ' кампаний.');
-    }
-  }
-
-  function fallbackExcludeGamesToAdGroups_(camp) {
-    var adGroups = camp.adGroups().withCondition('Status = ENABLED').get();
-    var agCount = 0;
-    while (adGroups.hasNext()) {
-      var ag = adGroups.next();
-      try {
-        var op = ag.display().newTopicBuilder().withTopicId(8).exclude();
-        if (op.isSuccessful()) agCount++;
-      } catch(e) {}
-    }
-    if (agCount > 0) Logger.log('[GAMES] ↪️ Фолбэк: топик Игры исключен в ' + agCount + ' группах.');
   }
 
   /* ====================== ИСКЛЮЧЕНИЕ YOUTUBE ====================== */
@@ -276,34 +224,49 @@ function runMain(ACCOUNT_CONFIG) {
     }
     Logger.log('[BLACKLIST] Общий список привязан к ' + campCount + ' активным КМС кампаниям.');
 
-    if (!data || data.length === 0) {
-      Logger.log('[BLACKLIST] БД вернула пустой список площадок. Загрузка новых не требуется.');
-      return;
-    }
+    // Точные категории по запросу пользователя (Игры)
+    var GAME_CATEGORIES = [
+      'mobileappcategory::60008',
+      'mobileappcategory::60506'
+    ];
 
     var columns = ['Row Type', 'Action', 'Customer ID', 'Placement Exclusion List ID', 'Placement Exclusion List Name', 'Placement Exclusion'];
     var upload = AdsApp.bulkUploads().newCsvUpload(columns);
-    
     var addedCount = 0;
-    data.forEach(function(item) {
-      if (item.placement && item.placement.indexOf('youtube.com') === -1) { 
-        upload.append({
-          'Row Type': 'Negative Placement',
-          'Action': 'Add',
-          'Customer ID': '',
-          'Placement Exclusion List ID': '',
-          'Placement Exclusion List Name': listName,
-          'Placement Exclusion': item.placement
-        });
-        addedCount++;
-      }
+
+    // 1. Добавляем игровые категории
+    GAME_CATEGORIES.forEach(function(item) {
+      upload.append({
+        'Row Type': 'Negative Placement',
+        'Action': 'Add',
+        'Customer ID': '',
+        'Placement Exclusion List ID': '',
+        'Placement Exclusion List Name': listName,
+        'Placement Exclusion': item
+      });
+      addedCount++;
     });
+
+    // 2. Добавляем данные из БД
+    if (data && data.length > 0) {
+      data.forEach(function(item) {
+        if (item.placement && item.placement.indexOf('youtube.com') === -1 && GAME_CATEGORIES.indexOf(item.placement) === -1) { 
+          upload.append({
+            'Row Type': 'Negative Placement',
+            'Action': 'Add',
+            'Customer ID': '',
+            'Placement Exclusion List ID': '',
+            'Placement Exclusion List Name': listName,
+            'Placement Exclusion': item.placement
+          });
+          addedCount++;
+        }
+      });
+    }
 
     if (addedCount > 0) {
       upload.apply();
-      Logger.log('[BLACKLIST] Bulk Upload запущен. Площадок отправлено: ' + addedCount);
-    } else {
-      Logger.log('[BLACKLIST] Нет новых уникальных площадок для загрузки.');
+      Logger.log('[BLACKLIST] Bulk Upload запущен. Игровых категорий и площадок отправлено: ' + addedCount);
     }
   }
 
