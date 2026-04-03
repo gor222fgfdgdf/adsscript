@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.69 - Lifetime Asset Performance)
+ * Google Ads Master Script (v15.70 - Assets Debug Logging)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -648,21 +648,31 @@ function runMain(ACCOUNT_CONFIG) {
   }
   
   function syncAssetPerformance_(myId, CONFIG) {
-    Logger.log('[ASSETS] Сбор статистики по ассетам за все время (ALL TIME)...');
+    Logger.log('[ASSETS-DEBUG] Старт дебаг-сбора статистики по ассетам (ALL TIME)...');
     var cleanId = myId.replace(/-/g, '');
 
+    // УБРАН ФИЛЬТР ВООБЩЕ: тянем всё подряд для диагностики
     var query = "SELECT asset.id, asset.type, asset.text_asset.text, asset.image_asset.full_size.url, " +
                 "ad_group_ad_asset_view.field_type, metrics.clicks, metrics.impressions, " +
                 "metrics.cost_micros, metrics.conversions " +
-                "FROM ad_group_ad_asset_view " +
-                "WHERE metrics.impressions > 0";
+                "FROM ad_group_ad_asset_view";
 
-    var report = AdsApp.report(query);
+    Logger.log('[ASSETS-DEBUG] Выполняем GAQL запрос без фильтрации...');
+    var report;
+    try {
+      report = AdsApp.report(query);
+    } catch(e) {
+      Logger.log('[ASSETS-DEBUG] ❌ Ошибка выполнения запроса: ' + e.message);
+      return;
+    }
+
     var rows = report.rows();
-
+    var totalRows = 0;
+    var rowsWithImpressions = 0;
     var assetData = {};
 
     while (rows.hasNext()) {
+      totalRows++;
       var row = rows.next();
       var assetId = row['asset.id'];
       var type = row['asset.type'];
@@ -681,6 +691,10 @@ function runMain(ACCOUNT_CONFIG) {
       var impressions = parseInt(row['metrics.impressions'], 10) || 0;
       var cost = (parseFloat(row['metrics.cost_micros']) || 0) / 1000000;
       var conv = parseFloat(row['metrics.conversions']) || 0;
+
+      if (impressions > 0) {
+        rowsWithImpressions++;
+      }
 
       if (!assetData[assetId]) {
         assetData[assetId] = {
@@ -701,13 +715,16 @@ function runMain(ACCOUNT_CONFIG) {
       assetData[assetId].conversions += conv;
     }
 
+    Logger.log('[ASSETS-DEBUG] Всего строк в отчете Google: ' + totalRows);
+    Logger.log('[ASSETS-DEBUG] Строк с показами > 0: ' + rowsWithImpressions);
+
     var payload = [];
     for (var key in assetData) {
        payload.push(assetData[key]);
     }
 
     if (payload.length === 0) {
-      Logger.log('[ASSETS] Статистики по ассетам пока нет.');
+      Logger.log('[ASSETS-DEBUG] Ассеты не найдены вообще (даже с нулевыми показами).');
       return;
     }
 
@@ -726,7 +743,7 @@ function runMain(ACCOUNT_CONFIG) {
       totalSynced += batch.length;
     }
 
-    Logger.log('[ASSETS] Выгружена статистика (Lifetime) по ' + totalSynced + ' уникальным ассетам.');
+    Logger.log('[ASSETS-DEBUG] Успешно. В БД отправлено: ' + totalSynced + ' уникальных ассетов (включая нулевые).');
   }
 
   function syncBidsFromRegistry_(myId, CONFIG) {
