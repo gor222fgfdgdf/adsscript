@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.71 - Removed Unsupported Portrait Images)
+ * Google Ads Master Script (v15.72 - Null Asset Protection)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -412,6 +412,7 @@ function runMain(ACCOUNT_CONFIG) {
     var unique = [];
     var ids = {};
     for (var i = 0; i < assetsArray.length; i++) {
+      if (!assetsArray[i]) continue; // ЗАЩИТА ОТ NULL
       var assetId = assetsArray[i].getId();
       if (!ids[assetId]) {
         ids[assetId] = true;
@@ -451,44 +452,54 @@ function runMain(ACCOUNT_CONFIG) {
         var loadedSqAssets = [];
         var loadedRectAssets = [];
 
-        // 1. Квадратные картинки (1:1)
         var rawSqUrls = (task.square_image_urls && task.square_image_urls.length > 0) ? task.square_image_urls : [task.square_image_url || task.img_square || 'https://example.com/1x1.jpg'];
         var sqUrls = getUniqueUrls_(rawSqUrls);
         
         sqUrls.forEach(function(url, idx) {
           try {
             var blob = UrlFetchApp.fetch(url).getBlob();
-            var asset = AdsApp.adAssets().newImageAssetBuilder()
+            var op = AdsApp.adAssets().newImageAssetBuilder()
               .withData(blob)
               .withName('Sq_' + (task.ad_id || 'new').substring(0, 8) + '_' + ts + '_' + idx)
-              .build().getResult();
-            loadedSqAssets.push(asset);
-          } catch(e) {}
+              .build();
+            if (op.isSuccessful()) {
+              loadedSqAssets.push(op.getResult());
+            } else {
+              Logger.log('[CREATE_AD] ⚠️ Google отклонил квадратную картинку (' + url + '): ' + op.getErrors().join(', '));
+            }
+          } catch(e) {
+            Logger.log('[CREATE_AD] ⚠️ Ошибка скачивания квадратной картинки (' + url + '): ' + e.message);
+          }
         });
 
-        // 2. Горизонтальные картинки (1.91:1)
         var rawRectUrls = (task.landscape_image_urls && task.landscape_image_urls.length > 0) ? task.landscape_image_urls : [task.rectangle_image_url || task.img_rect || 'https://example.com/1.91x1.jpg'];
         var rectUrls = getUniqueUrls_(rawRectUrls);
 
         rectUrls.forEach(function(url, idx) {
           try {
             var blob = UrlFetchApp.fetch(url).getBlob();
-            var asset = AdsApp.adAssets().newImageAssetBuilder()
+            var op = AdsApp.adAssets().newImageAssetBuilder()
               .withData(blob)
               .withName('Rect_' + (task.ad_id || 'new').substring(0, 8) + '_' + ts + '_' + idx)
-              .build().getResult();
-            loadedRectAssets.push(asset);
-          } catch(e) {}
+              .build();
+            if (op.isSuccessful()) {
+              loadedRectAssets.push(op.getResult());
+            } else {
+              Logger.log('[CREATE_AD] ⚠️ Google отклонил горизонтальную картинку (' + url + '): ' + op.getErrors().join(', '));
+            }
+          } catch(e) {
+            Logger.log('[CREATE_AD] ⚠️ Ошибка скачивания горизонтальной картинки (' + url + '): ' + e.message);
+          }
         });
 
         loadedSqAssets = getUniqueAssets_(loadedSqAssets);
         loadedRectAssets = getUniqueAssets_(loadedRectAssets);
 
         if (loadedSqAssets.length === 0 || loadedRectAssets.length === 0) {
-          throw new Error('Не удалось загрузить обязательные картинки (квадратные и горизонтальные).');
+          throw new Error('Не удалось загрузить ни одной валидной картинки (нужна хотя бы 1 квадратная и 1 горизонтальная).');
         }
 
-        Logger.log('[CREATE_AD] Загружено: ' + loadedSqAssets.length + ' кв., ' + loadedRectAssets.length + ' гор. Синхронизация (5 сек)...');
+        Logger.log('[CREATE_AD] Успешно загружено: ' + loadedSqAssets.length + ' кв., ' + loadedRectAssets.length + ' гор. Синхронизация (5 сек)...');
         Utilities.sleep(5000);
 
         var groupCount = 0;
@@ -628,29 +639,21 @@ function runMain(ACCOUNT_CONFIG) {
   }
   
   function syncAssetPerformance_(myId, CONFIG) {
-    Logger.log('[ASSETS-DEBUG] Старт дебаг-сбора статистики по ассетам (ALL TIME)...');
+    Logger.log('[ASSETS] Сбор статистики по ассетам за все время (ALL TIME)...');
     var cleanId = myId.replace(/-/g, '');
 
     var query = "SELECT asset.id, asset.type, asset.text_asset.text, asset.image_asset.full_size.url, " +
                 "ad_group_ad_asset_view.field_type, metrics.clicks, metrics.impressions, " +
                 "metrics.cost_micros, metrics.conversions " +
-                "FROM ad_group_ad_asset_view";
+                "FROM ad_group_ad_asset_view " +
+                "WHERE metrics.impressions > 0";
 
-    var report;
-    try {
-      report = AdsApp.report(query);
-    } catch(e) {
-      Logger.log('[ASSETS-DEBUG] ❌ Ошибка выполнения запроса: ' + e.message);
-      return;
-    }
-
+    var report = AdsApp.report(query);
     var rows = report.rows();
-    var totalRows = 0;
-    var rowsWithImpressions = 0;
+
     var assetData = {};
 
     while (rows.hasNext()) {
-      totalRows++;
       var row = rows.next();
       var assetId = row['asset.id'];
       var type = row['asset.type'];
@@ -669,10 +672,6 @@ function runMain(ACCOUNT_CONFIG) {
       var impressions = parseInt(row['metrics.impressions'], 10) || 0;
       var cost = (parseFloat(row['metrics.cost_micros']) || 0) / 1000000;
       var conv = parseFloat(row['metrics.conversions']) || 0;
-
-      if (impressions > 0) {
-        rowsWithImpressions++;
-      }
 
       if (!assetData[assetId]) {
         assetData[assetId] = {
@@ -693,16 +692,13 @@ function runMain(ACCOUNT_CONFIG) {
       assetData[assetId].conversions += conv;
     }
 
-    Logger.log('[ASSETS-DEBUG] Всего строк в отчете Google: ' + totalRows);
-    Logger.log('[ASSETS-DEBUG] Строк с показами > 0: ' + rowsWithImpressions);
-
     var payload = [];
     for (var key in assetData) {
        payload.push(assetData[key]);
     }
 
     if (payload.length === 0) {
-      Logger.log('[ASSETS-DEBUG] Ассеты не найдены вообще (даже с нулевыми показами).');
+      Logger.log('[ASSETS] Статистики по ассетам пока нет.');
       return;
     }
 
@@ -721,7 +717,7 @@ function runMain(ACCOUNT_CONFIG) {
       totalSynced += batch.length;
     }
 
-    Logger.log('[ASSETS-DEBUG] Успешно. В БД отправлено: ' + totalSynced + ' уникальных ассетов (включая нулевые).');
+    Logger.log('[ASSETS] Выгружена статистика (Lifetime) по ' + totalSynced + ' уникальным ассетам.');
   }
 
   function syncBidsFromRegistry_(myId, CONFIG) {
