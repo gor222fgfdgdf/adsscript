@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.62 - News Topic Restored & V4 Blacklist)
+ * Google Ads Master Script (v15.63 - Delta Blacklist Sync & V4)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -208,96 +208,97 @@ function runMain(ACCOUNT_CONFIG) {
     if (agCount > 0) Logger.log('[YOUTUBE] ↪️ Фолбэк: ' + url + ' исключен в ' + agCount + ' группах объявлений.');
   }
 
-  /* ====================== GLOBAL BLACKLIST ====================== */
+  /* ====================== GLOBAL BLACKLIST DELTA SYNC ====================== */
 
   function syncPlacementBlacklist_(myId, CONFIG) {
-    Logger.log('[BLACKLIST] Запуск миграции и синхронизации списка площадок...');
+    Logger.log('[BLACKLIST] Проверка статуса синхронизации...');
+    var cleanId = myId.replace(/-/g, '');
     
+    // Получаем время последней загрузки для этого аккаунта
+    var accData = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS + '?uid=eq.' + cleanId + '&select=blacklist_synced_at', null, null, CONFIG);
+    var lastSync = (accData && accData.length > 0) ? accData[0].blacklist_synced_at : null;
+
     var oldListName = 'Global Supabase Blacklist V3';
     var newListName = 'Global Supabase Blacklist V4';
 
-    // 1. Отвязываем старый список (V3) от всех кампаний
+    // 1. Отвязываем V3 от кампаний (влияние обнулено)
     var oldListIterator = AdsApp.excludedPlacementLists().withCondition("Name = '" + oldListName + "'").get();
     if (oldListIterator.hasNext()) {
       var oldList = oldListIterator.next();
       var linkedCamps = oldList.campaigns().get();
-      var detachedCount = 0;
       while (linkedCamps.hasNext()) {
-        try {
-          linkedCamps.next().removeExcludedPlacementList(oldList);
-          detachedCount++;
-        } catch(e) {}
-      }
-      if (detachedCount > 0) {
-        Logger.log('[BLACKLIST] Старый список (' + oldListName + ') отвязан от ' + detachedCount + ' кампаний. Влияние обнулено.');
+        try { linkedCamps.next().removeExcludedPlacementList(oldList); } catch(e) {}
       }
     }
 
-    // 2. Инициализируем новый список (V4)
+    // 2. Проверяем или создаем V4
     var excludedList;
+    var isNewList = false;
     var listIterator = AdsApp.excludedPlacementLists().withCondition("Name = '" + newListName + "'").get();
+    
     if (listIterator.hasNext()) {
       excludedList = listIterator.next();
     } else {
       excludedList = AdsApp.newExcludedPlacementListBuilder().withName(newListName).build().getResult();
       Logger.log('[BLACKLIST] Создан НОВЫЙ список исключений: ' + newListName);
+      isNewList = true;
+      lastSync = null; // Принудительно качаем всю базу для нового списка
     }
 
-    // 3. Привязываем V4 ко всем активным кампаниям
+    // 3. Привязываем V4
     var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').withCondition('CampaignType = DISPLAY').get();
-    var campCount = 0;
     while (campaigns.hasNext()) {
-      var camp = campaigns.next();
-      if (excludedList) {
-        try { camp.addExcludedPlacementList(excludedList); campCount++; } catch (e) {}
-      }
+      try { campaigns.next().addExcludedPlacementList(excludedList); } catch (e) {}
     }
-    Logger.log('[BLACKLIST] Список ' + newListName + ' привязан к ' + campCount + ' активным КМС кампаниям.');
 
-    // 4. Загрузка данных
-    var endpoint = '/rest/v1/placement_blacklist?select=placement&limit=10000';
+    // 4. Запрос площадок с дельта-фильтром
+    var endpoint = '/rest/v1/placement_blacklist?select=placement,created_at&limit=10000';
+    if (lastSync) {
+      endpoint += '&created_at=gt.' + encodeURIComponent(lastSync);
+      Logger.log('[BLACKLIST] Запрос только НОВЫХ площадок (добавленных после ' + lastSync + ')');
+    } else {
+      Logger.log('[BLACKLIST] Запрос ВСЕЙ базы площадок (первичная загрузка списка V4)');
+    }
+
     var data = apiCall_('get', endpoint, null, null, CONFIG);
 
-    var GAME_CATEGORIES = [
-      'mobileappcategory::60008',
-      'mobileappcategory::60506'
-    ];
-
+    var GAME_CATEGORIES = ['mobileappcategory::60008', 'mobileappcategory::60506'];
     var columns = ['Row Type', 'Action', 'Customer ID', 'Placement Exclusion List ID', 'Placement Exclusion List Name', 'Placement Exclusion'];
     var upload = AdsApp.bulkUploads().newCsvUpload(columns);
     var addedCount = 0;
+    var maxCreatedAt = lastSync;
 
-    GAME_CATEGORIES.forEach(function(item) {
-      upload.append({
-        'Row Type': 'Negative Placement',
-        'Action': 'Add',
-        'Customer ID': '',
-        'Placement Exclusion List ID': '',
-        'Placement Exclusion List Name': newListName,
-        'Placement Exclusion': item
+    // Добавляем категории игр только при первой инициализации списка
+    if (isNewList) {
+      GAME_CATEGORIES.forEach(function(item) {
+        upload.append({ 'Row Type': 'Negative Placement', 'Action': 'Add', 'Customer ID': '', 'Placement Exclusion List ID': '', 'Placement Exclusion List Name': newListName, 'Placement Exclusion': item });
+        addedCount++;
       });
-      addedCount++;
-    });
+    }
 
     if (data && data.length > 0) {
       data.forEach(function(item) {
         if (item.placement && item.placement.indexOf('youtube.com') === -1 && GAME_CATEGORIES.indexOf(item.placement) === -1) { 
-          upload.append({
-            'Row Type': 'Negative Placement',
-            'Action': 'Add',
-            'Customer ID': '',
-            'Placement Exclusion List ID': '',
-            'Placement Exclusion List Name': newListName,
-            'Placement Exclusion': item.placement
-          });
+          upload.append({ 'Row Type': 'Negative Placement', 'Action': 'Add', 'Customer ID': '', 'Placement Exclusion List ID': '', 'Placement Exclusion List Name': newListName, 'Placement Exclusion': item.placement });
           addedCount++;
+          
+          if (!maxCreatedAt || item.created_at > maxCreatedAt) {
+            maxCreatedAt = item.created_at;
+          }
         }
       });
     }
 
     if (addedCount > 0) {
       upload.apply();
-      Logger.log('[BLACKLIST] Bulk Upload запущен. Игровых категорий и площадок отправлено: ' + addedCount);
+      Logger.log('[BLACKLIST] Bulk Upload запущен. Строк отправлено: ' + addedCount);
+      
+      if (maxCreatedAt) {
+        patchSupabase_(CONFIG.TABLE_ACCOUNTS, { blacklist_synced_at: maxCreatedAt }, 'uid=eq.' + cleanId, CONFIG);
+        Logger.log('[BLACKLIST] Время синхронизации в БД обновлено: ' + maxCreatedAt);
+      }
+    } else {
+      Logger.log('[BLACKLIST] Нет новых площадок для загрузки.');
     }
   }
 
