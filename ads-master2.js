@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.66 - Asset Performance Daily Sync)
+ * Google Ads Master Script (v15.67 - GAQL Fix for Asset Sync)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -658,7 +658,7 @@ function runMain(ACCOUNT_CONFIG) {
                 'ad_group_ad_asset_view.field_type, metrics.clicks, metrics.impressions, ' +
                 'metrics.cost_micros, metrics.conversions ' +
                 'FROM ad_group_ad_asset_view ' +
-                'WHERE metrics.impressions > 0 DURING TODAY';
+                'WHERE segments.date DURING TODAY AND metrics.impressions > 0';
 
     var report = AdsApp.report(query);
     var rows = report.rows();
