@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.72 - Null Asset Protection)
+ * Google Ads Master Script (v16.3 - Null Asset Protection + Project ID)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -7,6 +7,8 @@ function runMain(ACCOUNT_CONFIG) {
   var CONFIG = {
     SUPABASE_URL: 'https://bdnppvkjpknwjlhhaarw.supabase.co',
     SUPABASE_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJkbnBwdmtqcGtud2psaGhhYXJ3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgxOTE2MDEsImV4cCI6MjA4Mzc2NzYwMX0.-Xs7L7prn4RjIXMy4Ya3DrcLh8q3R-7m2Dd_GbQk-fI',
+
+    PROJECT_ID:       (ACCOUNT_CONFIG && ACCOUNT_CONFIG.PROJECT_ID) ? ACCOUNT_CONFIG.PROJECT_ID : null,
 
     TABLE_ACCOUNTS:   'account_registry',
     TABLE_ADS:        'display_ads_registry',
@@ -21,7 +23,7 @@ function runMain(ACCOUNT_CONFIG) {
     EMAIL:                   (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EMAIL               ) ? ACCOUNT_CONFIG.EMAIL        : ''
   };
 
-  Logger.log('[CONFIG] SAFETY_LIMIT=' + CONFIG.SAFETY_LIMIT + ' EXTRA_LIMIT=' + CONFIG.EXTRA_LIMIT);
+  Logger.log('[CONFIG] Project ID: ' + (CONFIG.PROJECT_ID || 'DEFAULT') + ' | SAFETY_LIMIT=' + CONFIG.SAFETY_LIMIT + ' EXTRA_LIMIT=' + CONFIG.EXTRA_LIMIT);
 
   var acc  = AdsApp.currentAccount();
   var myId = acc.getCustomerId();
@@ -249,6 +251,9 @@ function runMain(ACCOUNT_CONFIG) {
     }
 
     var endpoint = '/rest/v1/placement_blacklist?select=placement,created_at&limit=10000';
+    if (CONFIG.PROJECT_ID) {
+      endpoint += '&project_id=eq.' + CONFIG.PROJECT_ID;
+    }
     if (lastSync) {
       endpoint += '&created_at=gt.' + encodeURIComponent(lastSync);
       Logger.log('[BLACKLIST] Запрос только НОВЫХ площадок (добавленных после ' + lastSync + ')');
@@ -427,7 +432,13 @@ function runMain(ACCOUNT_CONFIG) {
   function createAdFromRegistry_(myId, CONFIG) {
     Logger.log('[CREATE_AD] Проверка заданий на создание новых объявлений...');
     var cleanId = myId.replace(/-/g, '');
-    var tasks = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ADS + '?account_id=eq.' + cleanId + '&needs_create=eq.true&limit=5', null, null, CONFIG);
+    
+    var endpoint = '/rest/v1/' + CONFIG.TABLE_ADS + '?account_id=eq.' + cleanId + '&needs_create=eq.true&limit=5';
+    if (CONFIG.PROJECT_ID) {
+      endpoint += '&project_id=eq.' + CONFIG.PROJECT_ID;
+    }
+    
+    var tasks = apiCall_('get', endpoint, null, null, CONFIG);
 
     if (!tasks || tasks.length === 0) {
       Logger.log('[CREATE_AD] Заданий на создание нет.');
@@ -588,6 +599,10 @@ function runMain(ACCOUNT_CONFIG) {
       current_cpc: activeBid, balance: balance, updated_at: new Date().toISOString()
     };
     
+    if (CONFIG.PROJECT_ID) {
+      payload.project_id = CONFIG.PROJECT_ID;
+    }
+    
     apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS, payload, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
     Logger.log('[REGISTRY] Статистика успешно отправлена.');
   }
@@ -618,12 +633,18 @@ function runMain(ACCOUNT_CONFIG) {
         }
       } catch(e) {}
 
-      batch.push({
+      var item = {
         ad_id: ad.getId().toString(), account_id: cleanId, campaign_name: ad.getCampaign().getName(),
         type: ad.getType(), headline: headlines.split(' | ')[0],
         final_url: ad.urls().getFinalUrl() || '', clicks: stats.getClicks(), cost: stats.getCost(),
         status: adStatus, policy_status: policyStatus, updated_at: new Date().toISOString()
-      });
+      };
+      
+      if (CONFIG.PROJECT_ID) {
+        item.project_id = CONFIG.PROJECT_ID;
+      }
+
+      batch.push(item);
 
       if (batch.length >= 50) { 
         apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ADS, batch, { 'Prefer': 'resolution=merge-duplicates, return=representation' }, CONFIG); 
@@ -674,7 +695,7 @@ function runMain(ACCOUNT_CONFIG) {
       var conv = parseFloat(row['metrics.conversions']) || 0;
 
       if (!assetData[assetId]) {
-        assetData[assetId] = {
+        var item = {
           account_id: cleanId,
           asset_id: assetId,
           asset_text: text,
@@ -684,6 +705,10 @@ function runMain(ACCOUNT_CONFIG) {
           cost: 0.0,
           conversions: 0.0
         };
+        if (CONFIG.PROJECT_ID) {
+          item.project_id = CONFIG.PROJECT_ID;
+        }
+        assetData[assetId] = item;
       }
 
       assetData[assetId].clicks += clicks;
@@ -723,7 +748,13 @@ function runMain(ACCOUNT_CONFIG) {
   function syncBidsFromRegistry_(myId, CONFIG) {
     Logger.log('[BIDS] Проверка новых ставок в БД...');
     var cleanId = myId.replace(/-/g, '');
-    var data = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS + '?uid=eq.' + cleanId + '&select=target_cpc,needs_bid_sync', null, null, CONFIG);
+    
+    var endpoint = '/rest/v1/' + CONFIG.TABLE_ACCOUNTS + '?uid=eq.' + cleanId + '&select=target_cpc,needs_bid_sync';
+    if (CONFIG.PROJECT_ID) {
+      endpoint += '&project_id=eq.' + CONFIG.PROJECT_ID;
+    }
+    
+    var data = apiCall_('get', endpoint, null, null, CONFIG);
     
     if (!data || data.length === 0 || !data[0].needs_bid_sync) {
       Logger.log('[BIDS] Изменение ставки не требуется.');
@@ -741,7 +772,13 @@ function runMain(ACCOUNT_CONFIG) {
   function syncAdEditsFromRegistry_(myId, CONFIG) {
     Logger.log('[AD_EDITS] Проверка изменений статусов/ссылок/удалений...');
     var cleanId = myId.replace(/-/g, '');
-    var edits = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ADS + '?account_id=eq.' + cleanId + '&needs_sync=eq.true', null, null, CONFIG);
+    
+    var endpoint = '/rest/v1/' + CONFIG.TABLE_ADS + '?account_id=eq.' + cleanId + '&needs_sync=eq.true';
+    if (CONFIG.PROJECT_ID) {
+      endpoint += '&project_id=eq.' + CONFIG.PROJECT_ID;
+    }
+    
+    var edits = apiCall_('get', endpoint, null, null, CONFIG);
     
     if (!edits || edits.length === 0) {
       Logger.log('[AD_EDITS] Заданий на изменение нет.');
