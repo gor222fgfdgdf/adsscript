@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.67 - GAQL Fix for Asset Sync)
+ * Google Ads Master Script (v15.68 - Exact Date GAQL Fix)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -654,11 +654,11 @@ function runMain(ACCOUNT_CONFIG) {
     var timeZone = AdsApp.currentAccount().getTimeZone();
     var today = Utilities.formatDate(new Date(), timeZone, 'yyyy-MM-dd');
 
-    var query = 'SELECT asset.id, asset.type, asset.text_asset.text, asset.image_asset.full_size.url, ' +
-                'ad_group_ad_asset_view.field_type, metrics.clicks, metrics.impressions, ' +
-                'metrics.cost_micros, metrics.conversions ' +
-                'FROM ad_group_ad_asset_view ' +
-                'WHERE segments.date DURING TODAY AND metrics.impressions > 0';
+    var query = "SELECT asset.id, asset.type, asset.text_asset.text, asset.image_asset.full_size.url, " +
+                "ad_group_ad_asset_view.field_type, metrics.clicks, metrics.impressions, " +
+                "metrics.cost_micros, metrics.conversions " +
+                "FROM ad_group_ad_asset_view " +
+                "WHERE segments.date = '" + today + "' AND metrics.impressions > 0";
 
     var report = AdsApp.report(query);
     var rows = report.rows();
