@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.68 - Exact Date GAQL Fix)
+ * Google Ads Master Script (v15.69 - Lifetime Asset Performance)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -648,17 +648,14 @@ function runMain(ACCOUNT_CONFIG) {
   }
   
   function syncAssetPerformance_(myId, CONFIG) {
-    Logger.log('[ASSETS] Сбор статистики по ассетам за сегодня...');
+    Logger.log('[ASSETS] Сбор статистики по ассетам за все время (ALL TIME)...');
     var cleanId = myId.replace(/-/g, '');
-
-    var timeZone = AdsApp.currentAccount().getTimeZone();
-    var today = Utilities.formatDate(new Date(), timeZone, 'yyyy-MM-dd');
 
     var query = "SELECT asset.id, asset.type, asset.text_asset.text, asset.image_asset.full_size.url, " +
                 "ad_group_ad_asset_view.field_type, metrics.clicks, metrics.impressions, " +
                 "metrics.cost_micros, metrics.conversions " +
                 "FROM ad_group_ad_asset_view " +
-                "WHERE segments.date = '" + today + "' AND metrics.impressions > 0";
+                "WHERE metrics.impressions > 0";
 
     var report = AdsApp.report(query);
     var rows = report.rows();
@@ -691,7 +688,6 @@ function runMain(ACCOUNT_CONFIG) {
           asset_id: assetId,
           asset_text: text,
           field_type: fieldType,
-          stat_date: today,
           clicks: 0,
           impressions: 0,
           cost: 0.0,
@@ -711,7 +707,7 @@ function runMain(ACCOUNT_CONFIG) {
     }
 
     if (payload.length === 0) {
-      Logger.log('[ASSETS] За сегодня пока нет статистики по ассетам.');
+      Logger.log('[ASSETS] Статистики по ассетам пока нет.');
       return;
     }
 
@@ -730,7 +726,7 @@ function runMain(ACCOUNT_CONFIG) {
       totalSynced += batch.length;
     }
 
-    Logger.log('[ASSETS] Выгружена статистика за ' + today + ' по ' + totalSynced + ' уникальным ассетам.');
+    Logger.log('[ASSETS] Выгружена статистика (Lifetime) по ' + totalSynced + ' уникальным ассетам.');
   }
 
   function syncBidsFromRegistry_(myId, CONFIG) {
