@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.63 - Delta Blacklist Sync & V4)
+ * Google Ads Master Script (v15.66 - Asset Performance Daily Sync)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -39,6 +39,7 @@ function runMain(ACCOUNT_CONFIG) {
   
   try { updateAccountRegistry_(acc, CONFIG); }     catch (e) { Logger.log('[ERR][REGISTRY] ' + e.message); }
   try { syncAdsToRegistry_(myId, CONFIG); }        catch (e) { Logger.log('[ERR][SYNC_ADS] ' + e.message); }
+  try { syncAssetPerformance_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][ASSETS] ' + e.message); }
 
   try { createAdFromRegistry_(myId, CONFIG); }     catch (e) {
     Logger.log('[ERR][CREATE_AD] ' + e.message);
@@ -214,14 +215,12 @@ function runMain(ACCOUNT_CONFIG) {
     Logger.log('[BLACKLIST] Проверка статуса синхронизации...');
     var cleanId = myId.replace(/-/g, '');
     
-    // Получаем время последней загрузки для этого аккаунта
     var accData = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS + '?uid=eq.' + cleanId + '&select=blacklist_synced_at', null, null, CONFIG);
     var lastSync = (accData && accData.length > 0) ? accData[0].blacklist_synced_at : null;
 
     var oldListName = 'Global Supabase Blacklist V3';
     var newListName = 'Global Supabase Blacklist V4';
 
-    // 1. Отвязываем V3 от кампаний (влияние обнулено)
     var oldListIterator = AdsApp.excludedPlacementLists().withCondition("Name = '" + oldListName + "'").get();
     if (oldListIterator.hasNext()) {
       var oldList = oldListIterator.next();
@@ -231,7 +230,6 @@ function runMain(ACCOUNT_CONFIG) {
       }
     }
 
-    // 2. Проверяем или создаем V4
     var excludedList;
     var isNewList = false;
     var listIterator = AdsApp.excludedPlacementLists().withCondition("Name = '" + newListName + "'").get();
@@ -242,16 +240,14 @@ function runMain(ACCOUNT_CONFIG) {
       excludedList = AdsApp.newExcludedPlacementListBuilder().withName(newListName).build().getResult();
       Logger.log('[BLACKLIST] Создан НОВЫЙ список исключений: ' + newListName);
       isNewList = true;
-      lastSync = null; // Принудительно качаем всю базу для нового списка
+      lastSync = null; 
     }
 
-    // 3. Привязываем V4
     var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').withCondition('CampaignType = DISPLAY').get();
     while (campaigns.hasNext()) {
       try { campaigns.next().addExcludedPlacementList(excludedList); } catch (e) {}
     }
 
-    // 4. Запрос площадок с дельта-фильтром
     var endpoint = '/rest/v1/placement_blacklist?select=placement,created_at&limit=10000';
     if (lastSync) {
       endpoint += '&created_at=gt.' + encodeURIComponent(lastSync);
@@ -268,7 +264,6 @@ function runMain(ACCOUNT_CONFIG) {
     var addedCount = 0;
     var maxCreatedAt = lastSync;
 
-    // Добавляем категории игр только при первой инициализации списка
     if (isNewList) {
       GAME_CATEGORIES.forEach(function(item) {
         upload.append({ 'Row Type': 'Negative Placement', 'Action': 'Add', 'Customer ID': '', 'Placement Exclusion List ID': '', 'Placement Exclusion List Name': newListName, 'Placement Exclusion': item });
@@ -455,6 +450,7 @@ function runMain(ACCOUNT_CONFIG) {
         var ts = new Date().getTime().toString().substring(7);
         var loadedSqAssets = [];
         var loadedRectAssets = [];
+        var loadedPortAssets = [];
 
         var rawSqUrls = (task.square_image_urls && task.square_image_urls.length > 0) ? task.square_image_urls : [task.square_image_url || task.img_square || 'https://example.com/1x1.jpg'];
         var sqUrls = getUniqueUrls_(rawSqUrls);
@@ -484,14 +480,34 @@ function runMain(ACCOUNT_CONFIG) {
           } catch(e) {}
         });
 
+        var rawPortUrls = [];
+        if (task.portrait_image_urls && task.portrait_image_urls.length > 0) {
+          rawPortUrls = task.portrait_image_urls;
+        } else if (task.portrait_image_url || task.img_portrait) {
+          rawPortUrls = [task.portrait_image_url || task.img_portrait];
+        }
+        var portUrls = getUniqueUrls_(rawPortUrls);
+
+        portUrls.forEach(function(url, idx) {
+          try {
+            var blob = UrlFetchApp.fetch(url).getBlob();
+            var asset = AdsApp.adAssets().newImageAssetBuilder()
+              .withData(blob)
+              .withName('Port_' + (task.ad_id || 'new').substring(0, 8) + '_' + ts + '_' + idx)
+              .build().getResult();
+            loadedPortAssets.push(asset);
+          } catch(e) {}
+        });
+
         loadedSqAssets = getUniqueAssets_(loadedSqAssets);
         loadedRectAssets = getUniqueAssets_(loadedRectAssets);
+        loadedPortAssets = getUniqueAssets_(loadedPortAssets);
 
         if (loadedSqAssets.length === 0 || loadedRectAssets.length === 0) {
-          throw new Error('Не удалось загрузить картинки по предоставленным ссылкам.');
+          throw new Error('Не удалось загрузить обязательные картинки (квадратные и горизонтальные).');
         }
 
-        Logger.log('[CREATE_AD] Загружено ' + loadedSqAssets.length + ' кв. и ' + loadedRectAssets.length + ' гор. картинок. Синхронизация (5 сек)...');
+        Logger.log('[CREATE_AD] Загружено: ' + loadedSqAssets.length + ' кв., ' + loadedRectAssets.length + ' гор., ' + loadedPortAssets.length + ' верт. Синхронизация (5 сек)...');
         Utilities.sleep(5000);
 
         var groupCount = 0;
@@ -525,6 +541,11 @@ function runMain(ACCOUNT_CONFIG) {
 
           loadedSqAssets.forEach(function(asset) { adBuilder.addSquareMarketingImage(asset); });
           loadedRectAssets.forEach(function(asset) { adBuilder.addMarketingImage(asset); });
+          loadedPortAssets.forEach(function(asset) { adBuilder.addPortraitMarketingImage(asset); });
+
+          if (loadedSqAssets.length > 0) {
+            adBuilder.addLogoImage(loadedSqAssets[0]);
+          }
 
           var adOperation = adBuilder.build();
           
@@ -624,6 +645,92 @@ function runMain(ACCOUNT_CONFIG) {
       totalSynced += batch.length;
     }
     Logger.log('[SYNC_ADS] Выгружено ' + totalSynced + ' объявлений.');
+  }
+  
+  function syncAssetPerformance_(myId, CONFIG) {
+    Logger.log('[ASSETS] Сбор статистики по ассетам за сегодня...');
+    var cleanId = myId.replace(/-/g, '');
+
+    var timeZone = AdsApp.currentAccount().getTimeZone();
+    var today = Utilities.formatDate(new Date(), timeZone, 'yyyy-MM-dd');
+
+    var query = 'SELECT asset.id, asset.type, asset.text_asset.text, asset.image_asset.full_size.url, ' +
+                'ad_group_ad_asset_view.field_type, metrics.clicks, metrics.impressions, ' +
+                'metrics.cost_micros, metrics.conversions ' +
+                'FROM ad_group_ad_asset_view ' +
+                'WHERE metrics.impressions > 0 DURING TODAY';
+
+    var report = AdsApp.report(query);
+    var rows = report.rows();
+
+    var assetData = {};
+
+    while (rows.hasNext()) {
+      var row = rows.next();
+      var assetId = row['asset.id'];
+      var type = row['asset.type'];
+      var fieldType = row['ad_group_ad_asset_view.field_type'];
+
+      var text = '';
+      if (type === 'TEXT') {
+        text = row['asset.text_asset.text'] || '';
+      } else if (type === 'IMAGE') {
+        text = row['asset.image_asset.full_size.url'] || '';
+      } else {
+        continue; 
+      }
+
+      var clicks = parseInt(row['metrics.clicks'], 10) || 0;
+      var impressions = parseInt(row['metrics.impressions'], 10) || 0;
+      var cost = (parseFloat(row['metrics.cost_micros']) || 0) / 1000000;
+      var conv = parseFloat(row['metrics.conversions']) || 0;
+
+      if (!assetData[assetId]) {
+        assetData[assetId] = {
+          account_id: cleanId,
+          asset_id: assetId,
+          asset_text: text,
+          field_type: fieldType,
+          stat_date: today,
+          clicks: 0,
+          impressions: 0,
+          cost: 0.0,
+          conversions: 0.0
+        };
+      }
+
+      assetData[assetId].clicks += clicks;
+      assetData[assetId].impressions += impressions;
+      assetData[assetId].cost += cost;
+      assetData[assetId].conversions += conv;
+    }
+
+    var payload = [];
+    for (var key in assetData) {
+       payload.push(assetData[key]);
+    }
+
+    if (payload.length === 0) {
+      Logger.log('[ASSETS] За сегодня пока нет статистики по ассетам.');
+      return;
+    }
+
+    var batch = [];
+    var totalSynced = 0;
+    for (var i = 0; i < payload.length; i++) {
+      batch.push(payload[i]);
+      if (batch.length >= 50) {
+        apiCall_('post', '/rest/v1/asset_performance', batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
+        totalSynced += batch.length;
+        batch = [];
+      }
+    }
+    if (batch.length > 0) {
+      apiCall_('post', '/rest/v1/asset_performance', batch, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
+      totalSynced += batch.length;
+    }
+
+    Logger.log('[ASSETS] Выгружена статистика за ' + today + ' по ' + totalSynced + ' уникальным ассетам.');
   }
 
   function syncBidsFromRegistry_(myId, CONFIG) {
