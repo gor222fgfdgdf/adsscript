@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.61 - V3 Blacklist Migration)
+ * Google Ads Master Script (v15.62 - News Topic Restored & V4 Blacklist)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -31,7 +31,7 @@ function runMain(ACCOUNT_CONFIG) {
   try { checkSafetyLimitsStrict_(acc, CONFIG); }   catch (e) { Logger.log('[ERR][SAFETY] ' + e.message); }
   
   try { maybeCreateDefaultAdGroup_(); }            catch (e) { Logger.log('[ERR][SETUP_AG] ' + e.message); }
-  try { removeAllTopics_(); }                      catch (e) { Logger.log('[ERR][TOPIC_CLEANUP] ' + e.message); }
+  try { ensureNewsTopicInAllGroups_(); }           catch (e) { Logger.log('[ERR][TOPICS] ' + e.message); }
   try { ensureConversionAction_(CONFIG); }         catch (e) { Logger.log('[ERR][CONV_SETUP] ' + e.message); }
 
   try { syncBidsFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][BIDS] ' + e.message); }
@@ -84,7 +84,7 @@ function runMain(ACCOUNT_CONFIG) {
     }
   }
 
-  /* ====================== АВТОСОЗДАНИЕ ГРУППЫ И ОЧИСТКА ТЕМ ====================== */
+  /* ====================== АВТОСОЗДАНИЕ ГРУППЫ И ТЕМ ====================== */
 
   function maybeCreateDefaultAdGroup_() {
     Logger.log('[SETUP] Проверка наличия групп объявлений...');
@@ -125,33 +125,46 @@ function runMain(ACCOUNT_CONFIG) {
         });
       } catch(e) {}
     }
-    Logger.log('[SETUP] ✅ Базовая группа (широкая) успешно настроена.');
+    Logger.log('[SETUP] ✅ Базовая группа успешно настроена.');
   }
 
-  function removeAllTopics_() {
-    Logger.log('[TOPICS] Удаление всех тем таргетинга для перехода на широкую аудиторию...');
+  function ensureNewsTopicInAllGroups_() {
+    Logger.log('[TOPICS] Проверка наличия топика News (ID 16) во всех активных группах...');
     var adGroups = AdsApp.adGroups().withCondition('Status = ENABLED').get();
-    var removedCount = 0;
+    var addedCount = 0;
+    var restoredCount = 0;
 
     while (adGroups.hasNext()) {
       var ag = adGroups.next();
       try {
-        var topics = ag.display().topics().get();
-        while (topics.hasNext()) {
-          var t = topics.next();
-          t.remove();
-          removedCount++;
+        var existingTopics = ag.display().topics().get();
+        var found = false;
+        
+        while (existingTopics.hasNext()) {
+          var t = existingTopics.next();
+          if (t.getTopicId() === 16) {
+            found = true;
+            if (t.isPaused() || !t.isEnabled()) {
+              t.enable();
+              restoredCount++;
+              Logger.log('[TOPICS] 🔄 Топик News восстановлен/включен в группе: ' + ag.getName());
+            }
+            break;
+          }
+        }
+
+        if (!found) {
+          var op = ag.display().newTopicBuilder().withTopicId(16).build();
+          if (op.isSuccessful()) {
+            Logger.log('[TOPICS] ➕ Топик News добавлен в группу: ' + ag.getName());
+            addedCount++;
+          }
         }
       } catch(e) {
-        Logger.log('[TOPICS] ⚠️ Ошибка при очистке тем в группе ' + ag.getName() + ': ' + e.message);
+        Logger.log('[TOPICS] ⚠️ Ошибка при работе с группой ' + ag.getName() + ': ' + e.message);
       }
     }
-    
-    if (removedCount > 0) {
-      Logger.log('[TOPICS] ✅ Успешно удалено тем таргетинга: ' + removedCount);
-    } else {
-      Logger.log('[TOPICS] Темы таргетинга не найдены (уже широкая аудитория).');
-    }
+    Logger.log('[TOPICS] Готово. Создано новых: ' + addedCount + '. Восстановлено: ' + restoredCount + '.');
   }
 
   /* ====================== ИСКЛЮЧЕНИЕ YOUTUBE ====================== */
@@ -200,10 +213,10 @@ function runMain(ACCOUNT_CONFIG) {
   function syncPlacementBlacklist_(myId, CONFIG) {
     Logger.log('[BLACKLIST] Запуск миграции и синхронизации списка площадок...');
     
-    var oldListName = 'Global Supabase Blacklist V2';
-    var newListName = 'Global Supabase Blacklist V3';
+    var oldListName = 'Global Supabase Blacklist V3';
+    var newListName = 'Global Supabase Blacklist V4';
 
-    // 1. Отвязываем старый список (V2) от всех кампаний
+    // 1. Отвязываем старый список (V3) от всех кампаний
     var oldListIterator = AdsApp.excludedPlacementLists().withCondition("Name = '" + oldListName + "'").get();
     if (oldListIterator.hasNext()) {
       var oldList = oldListIterator.next();
@@ -220,7 +233,7 @@ function runMain(ACCOUNT_CONFIG) {
       }
     }
 
-    // 2. Инициализируем новый список (V3)
+    // 2. Инициализируем новый список (V4)
     var excludedList;
     var listIterator = AdsApp.excludedPlacementLists().withCondition("Name = '" + newListName + "'").get();
     if (listIterator.hasNext()) {
@@ -230,7 +243,7 @@ function runMain(ACCOUNT_CONFIG) {
       Logger.log('[BLACKLIST] Создан НОВЫЙ список исключений: ' + newListName);
     }
 
-    // 3. Привязываем V3 ко всем активным кампаниям
+    // 3. Привязываем V4 ко всем активным кампаниям
     var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').withCondition('CampaignType = DISPLAY').get();
     var campCount = 0;
     while (campaigns.hasNext()) {
