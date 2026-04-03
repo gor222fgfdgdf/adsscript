@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v15.70 - Assets Debug Logging)
+ * Google Ads Master Script (v15.71 - Removed Unsupported Portrait Images)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -450,8 +450,8 @@ function runMain(ACCOUNT_CONFIG) {
         var ts = new Date().getTime().toString().substring(7);
         var loadedSqAssets = [];
         var loadedRectAssets = [];
-        var loadedPortAssets = [];
 
+        // 1. Квадратные картинки (1:1)
         var rawSqUrls = (task.square_image_urls && task.square_image_urls.length > 0) ? task.square_image_urls : [task.square_image_url || task.img_square || 'https://example.com/1x1.jpg'];
         var sqUrls = getUniqueUrls_(rawSqUrls);
         
@@ -466,6 +466,7 @@ function runMain(ACCOUNT_CONFIG) {
           } catch(e) {}
         });
 
+        // 2. Горизонтальные картинки (1.91:1)
         var rawRectUrls = (task.landscape_image_urls && task.landscape_image_urls.length > 0) ? task.landscape_image_urls : [task.rectangle_image_url || task.img_rect || 'https://example.com/1.91x1.jpg'];
         var rectUrls = getUniqueUrls_(rawRectUrls);
 
@@ -480,34 +481,14 @@ function runMain(ACCOUNT_CONFIG) {
           } catch(e) {}
         });
 
-        var rawPortUrls = [];
-        if (task.portrait_image_urls && task.portrait_image_urls.length > 0) {
-          rawPortUrls = task.portrait_image_urls;
-        } else if (task.portrait_image_url || task.img_portrait) {
-          rawPortUrls = [task.portrait_image_url || task.img_portrait];
-        }
-        var portUrls = getUniqueUrls_(rawPortUrls);
-
-        portUrls.forEach(function(url, idx) {
-          try {
-            var blob = UrlFetchApp.fetch(url).getBlob();
-            var asset = AdsApp.adAssets().newImageAssetBuilder()
-              .withData(blob)
-              .withName('Port_' + (task.ad_id || 'new').substring(0, 8) + '_' + ts + '_' + idx)
-              .build().getResult();
-            loadedPortAssets.push(asset);
-          } catch(e) {}
-        });
-
         loadedSqAssets = getUniqueAssets_(loadedSqAssets);
         loadedRectAssets = getUniqueAssets_(loadedRectAssets);
-        loadedPortAssets = getUniqueAssets_(loadedPortAssets);
 
         if (loadedSqAssets.length === 0 || loadedRectAssets.length === 0) {
           throw new Error('Не удалось загрузить обязательные картинки (квадратные и горизонтальные).');
         }
 
-        Logger.log('[CREATE_AD] Загружено: ' + loadedSqAssets.length + ' кв., ' + loadedRectAssets.length + ' гор., ' + loadedPortAssets.length + ' верт. Синхронизация (5 сек)...');
+        Logger.log('[CREATE_AD] Загружено: ' + loadedSqAssets.length + ' кв., ' + loadedRectAssets.length + ' гор. Синхронизация (5 сек)...');
         Utilities.sleep(5000);
 
         var groupCount = 0;
@@ -541,7 +522,6 @@ function runMain(ACCOUNT_CONFIG) {
 
           loadedSqAssets.forEach(function(asset) { adBuilder.addSquareMarketingImage(asset); });
           loadedRectAssets.forEach(function(asset) { adBuilder.addMarketingImage(asset); });
-          loadedPortAssets.forEach(function(asset) { adBuilder.addPortraitMarketingImage(asset); });
 
           if (loadedSqAssets.length > 0) {
             adBuilder.addLogoImage(loadedSqAssets[0]);
@@ -651,13 +631,11 @@ function runMain(ACCOUNT_CONFIG) {
     Logger.log('[ASSETS-DEBUG] Старт дебаг-сбора статистики по ассетам (ALL TIME)...');
     var cleanId = myId.replace(/-/g, '');
 
-    // УБРАН ФИЛЬТР ВООБЩЕ: тянем всё подряд для диагностики
     var query = "SELECT asset.id, asset.type, asset.text_asset.text, asset.image_asset.full_size.url, " +
                 "ad_group_ad_asset_view.field_type, metrics.clicks, metrics.impressions, " +
                 "metrics.cost_micros, metrics.conversions " +
                 "FROM ad_group_ad_asset_view";
 
-    Logger.log('[ASSETS-DEBUG] Выполняем GAQL запрос без фильтрации...');
     var report;
     try {
       report = AdsApp.report(query);
