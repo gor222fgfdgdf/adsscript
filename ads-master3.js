@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v16.3 - Null Asset Protection + Project ID)
+ * Google Ads Master Script (v16.4 - Blacklist V5)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -220,8 +220,8 @@ function runMain(ACCOUNT_CONFIG) {
     var accData = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS + '?uid=eq.' + cleanId + '&select=blacklist_synced_at', null, null, CONFIG);
     var lastSync = (accData && accData.length > 0) ? accData[0].blacklist_synced_at : null;
 
-    var oldListName = 'Global Supabase Blacklist V3';
-    var newListName = 'Global Supabase Blacklist V4';
+    var oldListName = 'Global Supabase Blacklist V4';
+    var newListName = 'Global Supabase Blacklist V5';
 
     var oldListIterator = AdsApp.excludedPlacementLists().withCondition("Name = '" + oldListName + "'").get();
     if (oldListIterator.hasNext()) {
@@ -258,7 +258,7 @@ function runMain(ACCOUNT_CONFIG) {
       endpoint += '&created_at=gt.' + encodeURIComponent(lastSync);
       Logger.log('[BLACKLIST] Запрос только НОВЫХ площадок (добавленных после ' + lastSync + ')');
     } else {
-      Logger.log('[BLACKLIST] Запрос ВСЕЙ базы площадок (первичная загрузка списка V4)');
+      Logger.log('[BLACKLIST] Запрос ВСЕЙ базы площадок (первичная загрузка списка V5)');
     }
 
     var data = apiCall_('get', endpoint, null, null, CONFIG);
