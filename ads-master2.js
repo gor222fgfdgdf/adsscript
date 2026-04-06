@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v16.9 - Fixed CPA Method + Blacklist V7)
+ * Google Ads Master Script (v16.10 - Smart Bid Upgrade + Unlock Unknown Age)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -60,44 +60,68 @@ function runMain(ACCOUNT_CONFIG) {
 
   logDivider_('END');
 
-  /* ====================== АВТОРЕЖИМ СТРАТЕГИИ ====================== */
+  /* ====================== АВТОРЕЖИМ СТРАТЕГИИ И ДЕМОГРАФИИ ====================== */
 
   function autoUpgradeBiddingStrategy_(CONFIG) {
-    Logger.log('[BID_UPGRADE] Проверка конверсий для перехода на смарт-стратегию...');
+    Logger.log('[BID_UPGRADE] Проверка смарт-стратегий и демографии...');
     var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').withCondition('CampaignType = DISPLAY').get();
     var upgradedCount = 0;
 
     while (campaigns.hasNext()) {
       var camp = campaigns.next();
       var strategy = camp.bidding().getStrategyType();
+      var isConversionStrategy = (strategy === 'TARGET_CPA' || strategy === 'MAXIMIZE_CONVERSIONS');
 
-      // Если уже целевая CPA или максимум конверсий — не трогаем
-      if (strategy === 'TARGET_CPA' || strategy === 'MAXIMIZE_CONVERSIONS') {
-        continue;
+      // 1. Проверяем, набралось ли 10 конверсий для ручной кампании
+      if (!isConversionStrategy) {
+        var conversions = camp.getStatsFor('ALL_TIME').getConversions();
+        if (conversions >= CONFIG.MIN_CONVERSIONS_FOR_CPA) {
+          Logger.log('[BID_UPGRADE] 📈 Кампания "' + camp.getName() + '" набрала ' + conversions + ' конверсий.');
+          try {
+            camp.bidding().setStrategy('MAXIMIZE_CONVERSIONS');
+            
+            var ags = camp.adGroups().withCondition('Status IN [ENABLED, PAUSED]').get();
+            while (ags.hasNext()) {
+              ags.next().bidding().setCpa(CONFIG.TARGET_CPA);
+            }
+            
+            upgradedCount++;
+            isConversionStrategy = true; // Отмечаем, что кампания теперь на смарт-стратегии
+            Logger.log('[BID_UPGRADE] ✅ Стратегия изменена на Максимум конверсий (Target CPA = ' + CONFIG.TARGET_CPA + ')');
+          } catch (e) {
+            Logger.log('[BID_UPGRADE] ❌ Ошибка переключения: ' + e.message);
+          }
+        }
       }
 
-      var conversions = camp.getStatsFor('ALL_TIME').getConversions();
-
-      if (conversions >= CONFIG.MIN_CONVERSIONS_FOR_CPA) {
-        Logger.log('[BID_UPGRADE] 📈 Кампания "' + camp.getName() + '" набрала ' + conversions + ' конверсий.');
+      // 2. Если кампания конверсионная, снимаем блок с возраста "Неизвестно"
+      if (isConversionStrategy) {
         try {
-          camp.bidding().setStrategy('MAXIMIZE_CONVERSIONS');
+          var query = "SELECT ad_group_criterion.resource_name, ad_group.name " +
+                      "FROM ad_group_criterion " +
+                      "WHERE campaign.id = " + camp.getId() + " " +
+                      "AND ad_group_criterion.type = 'AGE_RANGE' " +
+                      "AND ad_group_criterion.negative = TRUE " +
+                      "AND ad_group_criterion.age_range.type = 'AGE_RANGE_UNDETERMINED'";
           
-          var ags = camp.adGroups().withCondition('Status IN [ENABLED, PAUSED]').get();
-          while (ags.hasNext()) {
-            ags.next().bidding().setCpa(CONFIG.TARGET_CPA); // Исправленный метод
+          var search = AdsApp.search(query);
+          while (search.hasNext()) {
+            var row = search.next();
+            AdsApp.mutate({
+              adGroupCriterionOperation: {
+                remove: row.ad_group_criterion.resource_name
+              }
+            });
+            Logger.log('[DEMOGRAPHICS] 🔓 Разрешен возраст "Неизвестно" в группе: ' + row.ad_group.name);
           }
-          
-          upgradedCount++;
-          Logger.log('[BID_UPGRADE] ✅ Стратегия изменена на Максимум конверсий (Target CPA = ' + CONFIG.TARGET_CPA + ')');
-        } catch (e) {
-          Logger.log('[BID_UPGRADE] ❌ Ошибка переключения: ' + e.message);
+        } catch(e) {
+          // Игнорируем ошибки поиска, если критерий уже удален
         }
       }
     }
     
     if (upgradedCount === 0) {
-      Logger.log('[BID_UPGRADE] Переключение пока не требуется.');
+      Logger.log('[BID_UPGRADE] Переключение стратегий пока не требуется.');
     }
   }
 
@@ -147,6 +171,7 @@ function runMain(ACCOUNT_CONFIG) {
     var CPC_BID = 0.02;
     var AD_GROUP_NAME = 'Topic_All';
 
+    // По умолчанию запрещаем всё "молодое" и "неизвестное" для холодных кампаний на CPC
     var EXCLUDE_AGE_RANGES = [ 'AGE_RANGE_18_24', 'AGE_RANGE_25_34', 'AGE_RANGE_35_44', 'AGE_RANGE_45_54', 'AGE_RANGE_UNDETERMINED' ];
 
     var customerId = AdsApp.currentAccount().getCustomerId().replace(/-/g, '');
