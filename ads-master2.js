@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v16.6 - Blacklist V7)
+ * Google Ads Master Script (v16.7 - Smart Bid Upgrade + Blacklist V7)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -17,6 +17,10 @@ function runMain(ACCOUNT_CONFIG) {
     TG_CHAT_ID: 37742949,
 
     CONVERSION_NAME: 'Offline_Sale',
+    
+    // SMART BID UPGRADE SETTINGS
+    MIN_CONVERSIONS_FOR_CPA: 10,
+    TARGET_CPA:              0.1,
 
     SAFETY_LIMIT:            (ACCOUNT_CONFIG && ACCOUNT_CONFIG.SAFETY_LIMIT != null) ? ACCOUNT_CONFIG.SAFETY_LIMIT : 45,
     EXTRA_LIMIT:             (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EXTRA_LIMIT  != null) ? ACCOUNT_CONFIG.EXTRA_LIMIT  : 0,
@@ -37,6 +41,7 @@ function runMain(ACCOUNT_CONFIG) {
   try { ensureConversionAction_(CONFIG); }         catch (e) { Logger.log('[ERR][CONV_SETUP] ' + e.message); }
 
   try { syncBidsFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][BIDS] ' + e.message); }
+  try { autoUpgradeBiddingStrategy_(CONFIG); }     catch (e) { Logger.log('[ERR][BID_UPGRADE] ' + e.message); }
   try { syncAdEditsFromRegistry_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][AD_EDITS] ' + e.message); }
   
   try { updateAccountRegistry_(acc, CONFIG); }     catch (e) { Logger.log('[ERR][REGISTRY] ' + e.message); }
@@ -54,6 +59,48 @@ function runMain(ACCOUNT_CONFIG) {
   try { syncPlacementBlacklist_(myId, CONFIG); }    catch (e) { Logger.log('[ERR][BLACKLIST] ' + e.message); }
 
   logDivider_('END');
+
+  /* ====================== АВТОРЕЖИМ СТРАТЕГИИ ====================== */
+
+  function autoUpgradeBiddingStrategy_(CONFIG) {
+    Logger.log('[BID_UPGRADE] Проверка конверсий для перехода на Target CPA...');
+    var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').withCondition('CampaignType = DISPLAY').get();
+    var upgradedCount = 0;
+
+    while (campaigns.hasNext()) {
+      var camp = campaigns.next();
+      var strategy = camp.bidding().getStrategyType();
+
+      // Если уже целевая CPA или максимум конверсий — не трогаем
+      if (strategy === 'TARGET_CPA' || strategy === 'MAXIMIZE_CONVERSIONS') {
+        continue;
+      }
+
+      var conversions = camp.getStatsFor('ALL_TIME').getConversions();
+
+      if (conversions >= CONFIG.MIN_CONVERSIONS_FOR_CPA) {
+        Logger.log('[BID_UPGRADE] 📈 Кампания "' + camp.getName() + '" набрала ' + conversions + ' конверсий. Переключаем на Target CPA = ' + CONFIG.TARGET_CPA);
+        try {
+          camp.bidding().setStrategy('TARGET_CPA');
+          
+          // Проставляем Target CPA для всех групп объявлений в этой кампании
+          var ags = camp.adGroups().withCondition('Status IN [ENABLED, PAUSED]').get();
+          while (ags.hasNext()) {
+            ags.next().bidding().setTargetCpa(CONFIG.TARGET_CPA);
+          }
+          
+          upgradedCount++;
+          Logger.log('[BID_UPGRADE] ✅ Стратегия успешно изменена.');
+        } catch (e) {
+          Logger.log('[BID_UPGRADE] ❌ Ошибка переключения: ' + e.message);
+        }
+      }
+    }
+    
+    if (upgradedCount === 0) {
+      Logger.log('[BID_UPGRADE] Переключение пока не требуется.');
+    }
+  }
 
   /* ====================== АВТОСОЗДАНИЕ КОНВЕРСИИ ====================== */
 
