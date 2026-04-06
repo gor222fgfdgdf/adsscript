@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v16.8 - Smart Bid Upgrade MAXIMIZE_CONVERSIONS + Blacklist V7)
+ * Google Ads Master Script (v16.9 - Fixed CPA Method + Blacklist V7)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -81,13 +81,11 @@ function runMain(ACCOUNT_CONFIG) {
       if (conversions >= CONFIG.MIN_CONVERSIONS_FOR_CPA) {
         Logger.log('[BID_UPGRADE] 📈 Кампания "' + camp.getName() + '" набрала ' + conversions + ' конверсий.');
         try {
-          // В новом Google Ads API стратегия TARGET_CPA интегрирована в MAXIMIZE_CONVERSIONS
           camp.bidding().setStrategy('MAXIMIZE_CONVERSIONS');
           
-          // Проставляем Target CPA для всех групп объявлений
           var ags = camp.adGroups().withCondition('Status IN [ENABLED, PAUSED]').get();
           while (ags.hasNext()) {
-            ags.next().bidding().setTargetCpa(CONFIG.TARGET_CPA);
+            ags.next().bidding().setCpa(CONFIG.TARGET_CPA); // Исправленный метод
           }
           
           upgradedCount++;
