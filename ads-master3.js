@@ -1,5 +1,5 @@
 /**
- * Google Ads Master Script (v16.7 - Smart Bid Upgrade + Blacklist V7)
+ * Google Ads Master Script (v16.8 - Smart Bid Upgrade MAXIMIZE_CONVERSIONS + Blacklist V7)
  */
 
 function runMain(ACCOUNT_CONFIG) {
@@ -63,7 +63,7 @@ function runMain(ACCOUNT_CONFIG) {
   /* ====================== АВТОРЕЖИМ СТРАТЕГИИ ====================== */
 
   function autoUpgradeBiddingStrategy_(CONFIG) {
-    Logger.log('[BID_UPGRADE] Проверка конверсий для перехода на Target CPA...');
+    Logger.log('[BID_UPGRADE] Проверка конверсий для перехода на смарт-стратегию...');
     var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').withCondition('CampaignType = DISPLAY').get();
     var upgradedCount = 0;
 
@@ -79,18 +79,19 @@ function runMain(ACCOUNT_CONFIG) {
       var conversions = camp.getStatsFor('ALL_TIME').getConversions();
 
       if (conversions >= CONFIG.MIN_CONVERSIONS_FOR_CPA) {
-        Logger.log('[BID_UPGRADE] 📈 Кампания "' + camp.getName() + '" набрала ' + conversions + ' конверсий. Переключаем на Target CPA = ' + CONFIG.TARGET_CPA);
+        Logger.log('[BID_UPGRADE] 📈 Кампания "' + camp.getName() + '" набрала ' + conversions + ' конверсий.');
         try {
-          camp.bidding().setStrategy('TARGET_CPA');
+          // В новом Google Ads API стратегия TARGET_CPA интегрирована в MAXIMIZE_CONVERSIONS
+          camp.bidding().setStrategy('MAXIMIZE_CONVERSIONS');
           
-          // Проставляем Target CPA для всех групп объявлений в этой кампании
+          // Проставляем Target CPA для всех групп объявлений
           var ags = camp.adGroups().withCondition('Status IN [ENABLED, PAUSED]').get();
           while (ags.hasNext()) {
             ags.next().bidding().setTargetCpa(CONFIG.TARGET_CPA);
           }
           
           upgradedCount++;
-          Logger.log('[BID_UPGRADE] ✅ Стратегия успешно изменена.');
+          Logger.log('[BID_UPGRADE] ✅ Стратегия изменена на Максимум конверсий (Target CPA = ' + CONFIG.TARGET_CPA + ')');
         } catch (e) {
           Logger.log('[BID_UPGRADE] ❌ Ошибка переключения: ' + e.message);
         }
