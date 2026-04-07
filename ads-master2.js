@@ -1,10 +1,10 @@
 /**
- * Google Ads Master Script (v16.29 - Native Builders for Whitelist)
+ * Google Ads Master Script (v16.31 - Mobile Apps URL Fallback)
  */
 
 function runMain(ACCOUNT_CONFIG) {
 
-  var SCRIPT_VERSION = 'v16.29';
+  var SCRIPT_VERSION = 'v16.31';
 
   var CONFIG = {
     SUPABASE_URL: 'https://bdnppvkjpknwjlhhaarw.supabase.co',
@@ -69,10 +69,9 @@ function runMain(ACCOUNT_CONFIG) {
       var topics = AdsApp.display().topics().get();
       while (topics.hasNext()) topics.next().remove();
       
-      // ПРОВЕРКА: Если площадок физически нет, сбрасываем время синхронизации
       var existingCount = 0;
       try {
-        var query = "SELECT ad_group_criterion.criterion_id FROM ad_group_criterion WHERE ad_group.status = 'ENABLED' AND ad_group_criterion.type IN ('PLACEMENT', 'MOBILE_APP_CATEGORY') AND ad_group_criterion.negative = FALSE";
+        var query = "SELECT ad_group_criterion.criterion_id FROM ad_group_criterion WHERE ad_group.status = 'ENABLED' AND ad_group_criterion.type IN ('PLACEMENT', 'MOBILE_APP_CATEGORY', 'MOBILE_APPLICATION') AND ad_group_criterion.negative = FALSE";
         var res = AdsApp.search(query);
         while(res.hasNext()) { res.next(); existingCount++; }
       } catch(e) {}
@@ -102,7 +101,6 @@ function runMain(ACCOUNT_CONFIG) {
             targetGroups.forEach(function(ag) {
               try {
                 if (item.placement.indexOf('mobileappcategory::') === 0) {
-                  // Для категорий оставляем Mutate, так как прямого билдера нет, но с правильным синтаксисом
                   var catId = item.placement.split('::')[1];
                   AdsApp.mutate({
                     adGroupCriterionOperation: {
@@ -113,21 +111,41 @@ function runMain(ACCOUNT_CONFIG) {
                     }
                   });
                   addedCount++;
+                } else if (item.placement.indexOf('mobileapp::') === 0) {
+                  var appData = item.placement.split('::')[1];
+                  var storeType = appData.split('-')[0];
+                  var appId = appData.substring(storeType.length + 1);
+                  var storeUrl = (storeType === '1') ? 'apps.apple.com/app/id' + appId : 'play.google.com/store/apps/details?id=' + appId;
+
+                  try {
+                    AdsApp.mutate({
+                      adGroupCriterionOperation: {
+                        create: {
+                          adGroup: 'customers/' + cleanId + '/adGroups/' + ag.getId(),
+                          mobileApp: { appId: appData }
+                        }
+                      }
+                    });
+                    addedCount++;
+                  } catch(e) {}
+
+                  try {
+                    var op = ag.display().newPlacementBuilder().withUrl(storeUrl).build();
+                    if (op.isSuccessful()) addedCount++;
+                  } catch(e) {}
+                  
                 } else {
-                  // Нативный билдер: сам распознает домены и ID мобильных приложений (mobileapp::)
                   var op = ag.display().newPlacementBuilder().withUrl(item.placement).build();
                   if (op.isSuccessful()) addedCount++;
                 }
-              } catch(e) {
-                // Игнорируем дубликаты
-              }
+              } catch(e) {}
             });
             if (!maxCreatedAt || item.created_at > maxCreatedAt) maxCreatedAt = item.created_at;
           }
         });
         
         if (addedCount > 0) {
-          Logger.log('[WHITELIST] Нативная загрузка выполнена. Инъекций таргетинга: ' + addedCount);
+          Logger.log('[WHITELIST] Загрузка выполнена. Инъекций таргетинга: ' + addedCount);
           patchSupabase_(CONFIG.TABLE_ACCOUNTS, { blacklist_synced_at: maxCreatedAt }, 'uid=eq.' + cleanId, CONFIG);
         }
       } else {
@@ -235,9 +253,7 @@ function runMain(ACCOUNT_CONFIG) {
           camp.bidding().setStrategy('MANUAL_CPC');
           Logger.log('[REVERT] Кампания "' + camp.getName() + '" переведена обратно на MANUAL_CPC.');
           revertedCount++;
-        } catch (e) {
-          Logger.log('[REVERT] Ошибка возврата: ' + e.message);
-        }
+        } catch (e) {}
       }
     }
     
