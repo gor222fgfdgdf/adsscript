@@ -1,10 +1,10 @@
 /**
- * Google Ads Master Script (v16.21 - Strict MANUAL_CPC Lock)
+ * Google Ads Master Script (v16.22 - Manual CPC Only)
  */
 
 function runMain(ACCOUNT_CONFIG) {
 
-  var SCRIPT_VERSION = 'v16.21';
+  var SCRIPT_VERSION = 'v16.22';
 
   var CONFIG = {
     SUPABASE_URL: 'https://bdnppvkjpknwjlhhaarw.supabase.co',
@@ -19,9 +19,6 @@ function runMain(ACCOUNT_CONFIG) {
     TG_CHAT_ID: 37742949,
 
     CONVERSION_NAME: 'Offline_Sale',
-    
-    // SMART BID UPGRADE SETTINGS
-    MIN_CONVERSIONS_FOR_UPGRADE: 10,
 
     SAFETY_LIMIT:            (ACCOUNT_CONFIG && ACCOUNT_CONFIG.SAFETY_LIMIT != null) ? ACCOUNT_CONFIG.SAFETY_LIMIT : 45,
     EXTRA_LIMIT:             (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EXTRA_LIMIT  != null) ? ACCOUNT_CONFIG.EXTRA_LIMIT  : 0,
@@ -44,7 +41,6 @@ function runMain(ACCOUNT_CONFIG) {
 
   try { syncBidsFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][BIDS] ' + e.message); }
   try { syncUnpauseFromRegistry_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][UNPAUSE] ' + e.message); }
-  try { autoUpgradeBiddingStrategy_(CONFIG); }     catch (e) { Logger.log('[ERR][BID_UPGRADE] ' + e.message); }
   try { syncAdEditsFromRegistry_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][AD_EDITS] ' + e.message); }
   
   try { updateAccountRegistry_(acc, CONFIG); }     catch (e) { Logger.log('[ERR][REGISTRY] ' + e.message); }
@@ -88,81 +84,6 @@ function runMain(ACCOUNT_CONFIG) {
     
     Logger.log('[UNPAUSE] ▶️ Успешно включено групп: ' + unpausedCount);
     patchSupabase_(CONFIG.TABLE_ACCOUNTS, { needs_unpause_groups: false }, 'uid=eq.' + cleanId, CONFIG);
-  }
-
-  /* ====================== АВТОРЕЖИМ СТРАТЕГИИ И ДЕМОГРАФИИ ====================== */
-
-  function autoUpgradeBiddingStrategy_(CONFIG) {
-    Logger.log('[BID_UPGRADE] Проверка смарт-стратегий и демографии...');
-    var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').withCondition('CampaignType = DISPLAY').get();
-    var upgradedCount = 0;
-    var cleanId = acc.getCustomerId().replace(/-/g, '');
-
-    while (campaigns.hasNext()) {
-      var camp = campaigns.next();
-      
-      var query = "SELECT campaign.bidding_strategy_type FROM campaign WHERE campaign.id = " + camp.getId();
-      var res = AdsApp.search(query);
-      if (!res.hasNext()) continue;
-      
-      var row = res.next();
-      var strategyType = row.campaign.bidding_strategy_type;
-      var conversions = camp.getStatsFor('ALL_TIME').getConversions();
-      
-      // СТРОГОЕ УСЛОВИЕ: Трогаем только кампании на MANUAL_CPC
-      if (strategyType === 'MANUAL_CPC' && conversions >= CONFIG.MIN_CONVERSIONS_FOR_UPGRADE) {
-        Logger.log('[BID_UPGRADE] 📈 Кампания "' + camp.getName() + '" на MANUAL_CPC набрала ' + conversions + ' конв. Переключаем и останавливаем группы...');
-        try {
-          camp.bidding().setStrategy('MAXIMIZE_CONVERSIONS');
-          
-          var ags = camp.adGroups().withCondition('Status = ENABLED').get();
-          var pausedCount = 0;
-          while (ags.hasNext()) {
-            ags.next().pause();
-            pausedCount++;
-          }
-          
-          upgradedCount++;
-          strategyType = 'MAXIMIZE_CONVERSIONS'; // Обновляем для блока демографии ниже
-          Logger.log('[BID_UPGRADE] ✅ Стратегия изменена. ' + pausedCount + ' групп(ы) остановлено.');
-
-          var emailStr = CONFIG.EMAIL ? CONFIG.EMAIL : 'Не указан';
-          var tgMsg = '⚠️ <b>Требуется ручная настройка Target CPA</b>\n\n' +
-                      '<b>UID:</b> <code>' + cleanId + '</code>\n' +
-                      '<b>Email:</b> ' + emailStr + '\n' +
-                      '<b>Кампания:</b> ' + camp.getName() + '\n\n' +
-                      'Стратегия переключена на Максимум конверсий. Группы объявлений (' + pausedCount + ' шт.) остановлены. Задайте ставку в Google Ads и снимите паузу через интерфейс управления.';
-          tgSend_(tgMsg, CONFIG);
-
-        } catch (e) {
-          Logger.log('[BID_UPGRADE] ❌ Ошибка переключения: ' + e.message);
-        }
-      }
-
-      // Разблокируем демографию для конверсионных кампаний
-      var isConversionStrategy = (strategyType === 'TARGET_CPA' || strategyType === 'MAXIMIZE_CONVERSIONS' || strategyType === 'TARGET_ROAS' || strategyType === 'MAXIMIZE_CONVERSION_VALUE');
-      if (isConversionStrategy) {
-        try {
-          var qDemo = "SELECT ad_group_criterion.resource_name, ad_group.name " +
-                      "FROM ad_group_criterion " +
-                      "WHERE campaign.id = " + camp.getId() + " " +
-                      "AND ad_group_criterion.type = 'AGE_RANGE' " +
-                      "AND ad_group_criterion.negative = TRUE " +
-                      "AND ad_group_criterion.age_range.type = 'AGE_RANGE_UNDETERMINED'";
-          
-          var searchDemo = AdsApp.search(qDemo);
-          while (searchDemo.hasNext()) {
-            var rowDemo = searchDemo.next();
-            AdsApp.mutate({ adGroupCriterionOperation: { remove: rowDemo.ad_group_criterion.resource_name } });
-            Logger.log('[DEMOGRAPHICS] 🔓 Разрешен возраст "Неизвестно" в группе: ' + rowDemo.ad_group.name);
-          }
-        } catch(e) {}
-      }
-    }
-    
-    if (upgradedCount === 0) {
-      Logger.log('[BID_UPGRADE] Изменение стратегий пока не требуется.');
-    }
   }
 
   /* ====================== АВТОСОЗДАНИЕ КОНВЕРСИИ ====================== */
@@ -876,7 +797,6 @@ function runMain(ACCOUNT_CONFIG) {
       var ag = ags.next();
       var strategy = ag.getCampaign().bidding().getStrategyType();
       
-      // СТРОГОЕ УСЛОВИЕ: Меняем ставку только у групп, которые в кампаниях на MANUAL_CPC
       if (strategy !== 'MANUAL_CPC') {
         continue;
       }
