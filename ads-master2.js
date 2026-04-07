@@ -1,10 +1,10 @@
 /**
- * Google Ads Master Script (v16.27 - Smart Whitelist Reset & Mutate Fix)
+ * Google Ads Master Script (v16.29 - Native Builders for Whitelist)
  */
 
 function runMain(ACCOUNT_CONFIG) {
 
-  var SCRIPT_VERSION = 'v16.27';
+  var SCRIPT_VERSION = 'v16.29';
 
   var CONFIG = {
     SUPABASE_URL: 'https://bdnppvkjpknwjlhhaarw.supabase.co',
@@ -88,49 +88,46 @@ function runMain(ACCOUNT_CONFIG) {
       var data = apiCall_('get', endpoint, null, null, CONFIG);
       
       if (data && data.length > 0) {
-        var customerId = cleanId;
         var ags = AdsApp.adGroups().withCondition('Status = ENABLED').get();
         var targetGroups = [];
         while (ags.hasNext()) {
-          targetGroups.push('customers/' + customerId + '/adGroups/' + ags.next().getId());
+          targetGroups.push(ags.next());
         }
         
-        var operations = [];
+        var addedCount = 0;
         var maxCreatedAt = lastSync;
         
         data.forEach(function(item) {
           if (item.placement && item.placement.indexOf('youtube.com') === -1) {
-            var crit = {};
-            if (item.placement.indexOf('mobileappcategory::') === 0) {
-              crit = { mobileAppCategory: { mobileAppCategoryConstant: 'mobileAppCategories/' + item.placement.split('::')[1] } };
-            } else {
-              crit = { placement: { url: item.placement } };
-            }
-            
-            targetGroups.forEach(function(agResource) {
-              var createObj = { adGroup: agResource, status: 'ENABLED' };
-              if (crit.mobileAppCategory) createObj.mobileAppCategory = crit.mobileAppCategory;
-              else createObj.placement = crit.placement;
-              
-              operations.push({ adGroupCriterionOperation: { create: createObj } });
+            targetGroups.forEach(function(ag) {
+              try {
+                if (item.placement.indexOf('mobileappcategory::') === 0) {
+                  // Для категорий оставляем Mutate, так как прямого билдера нет, но с правильным синтаксисом
+                  var catId = item.placement.split('::')[1];
+                  AdsApp.mutate({
+                    adGroupCriterionOperation: {
+                      create: {
+                        adGroup: 'customers/' + cleanId + '/adGroups/' + ag.getId(),
+                        mobileAppCategory: { mobileAppCategoryConstant: 'mobileAppCategories/' + catId }
+                      }
+                    }
+                  });
+                  addedCount++;
+                } else {
+                  // Нативный билдер: сам распознает домены и ID мобильных приложений (mobileapp::)
+                  var op = ag.display().newPlacementBuilder().withUrl(item.placement).build();
+                  if (op.isSuccessful()) addedCount++;
+                }
+              } catch(e) {
+                // Игнорируем дубликаты
+              }
             });
-            
             if (!maxCreatedAt || item.created_at > maxCreatedAt) maxCreatedAt = item.created_at;
           }
         });
         
-        if (operations.length > 0) {
-          var chunk = [];
-          for (var i = 0; i < operations.length; i++) {
-            chunk.push(operations[i]);
-            if (chunk.length >= 5000) {
-              AdsApp.mutate(chunk);
-              chunk = [];
-            }
-          }
-          if (chunk.length > 0) AdsApp.mutate(chunk);
-          
-          Logger.log('[WHITELIST] Прямая загрузка Mutate выполнена. Инъекций таргетинга: ' + operations.length);
+        if (addedCount > 0) {
+          Logger.log('[WHITELIST] Нативная загрузка выполнена. Инъекций таргетинга: ' + addedCount);
           patchSupabase_(CONFIG.TABLE_ACCOUNTS, { blacklist_synced_at: maxCreatedAt }, 'uid=eq.' + cleanId, CONFIG);
         }
       } else {
@@ -266,7 +263,6 @@ function runMain(ACCOUNT_CONFIG) {
           adGroupCriterionOperation: {
             create: { 
               adGroup: adGroupResourceName, 
-              status: 'ENABLED', 
               negative: true, 
               ageRange: { type: 'AGE_RANGE_UNDETERMINED' } 
             }
@@ -378,7 +374,11 @@ function runMain(ACCOUNT_CONFIG) {
       try {
         AdsApp.mutate({
           adGroupCriterionOperation: {
-            create: { adGroup: adGroupResourceName, status: 'ENABLED', negative: true, ageRange: { type: EXCLUDE_AGE_RANGES[a] } }
+            create: { 
+              adGroup: adGroupResourceName, 
+              negative: true, 
+              ageRange: { type: EXCLUDE_AGE_RANGES[a] } 
+            }
           }
         });
       } catch(e) {}
