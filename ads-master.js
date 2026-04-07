@@ -1,10 +1,10 @@
 /**
- * Google Ads Master Script (v16.15 - Target ROAS 10%)
+ * Google Ads Master Script (v16.17 - Pause AdGroups on Upgrade + Strict TG Alerts)
  */
 
 function runMain(ACCOUNT_CONFIG) {
 
-  var SCRIPT_VERSION = 'v16.15';
+  var SCRIPT_VERSION = 'v16.17';
 
   var CONFIG = {
     SUPABASE_URL: 'https://bdnppvkjpknwjlhhaarw.supabase.co',
@@ -22,7 +22,6 @@ function runMain(ACCOUNT_CONFIG) {
     
     // SMART BID UPGRADE SETTINGS
     MIN_CONVERSIONS_FOR_UPGRADE: 10,
-    TARGET_ROAS:                 0.1, // 0.1 = 10%
 
     SAFETY_LIMIT:            (ACCOUNT_CONFIG && ACCOUNT_CONFIG.SAFETY_LIMIT != null) ? ACCOUNT_CONFIG.SAFETY_LIMIT : 45,
     EXTRA_LIMIT:             (ACCOUNT_CONFIG && ACCOUNT_CONFIG.EXTRA_LIMIT  != null) ? ACCOUNT_CONFIG.EXTRA_LIMIT  : 0,
@@ -51,10 +50,7 @@ function runMain(ACCOUNT_CONFIG) {
   try { syncAdsToRegistry_(myId, CONFIG); }        catch (e) { Logger.log('[ERR][SYNC_ADS] ' + e.message); }
   try { syncAssetPerformance_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][ASSETS] ' + e.message); }
 
-  try { createAdFromRegistry_(myId, CONFIG); }     catch (e) {
-    Logger.log('[ERR][CREATE_AD] ' + e.message);
-    tgSend_('❌ <b>Create Ad — ОШИБКА</b>\nАкк: <code>' + myId + '</code>\n' + e.message, CONFIG);
-  }
+  try { createAdFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][CREATE_AD] ' + e.message); }
 
   try { uploadConversionsFromEdge_(myId, CONFIG); } catch (e) { Logger.log('[ERR][CONVERSIONS] ' + e.message); }
   
@@ -69,50 +65,48 @@ function runMain(ACCOUNT_CONFIG) {
     Logger.log('[BID_UPGRADE] Проверка смарт-стратегий и демографии...');
     var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').withCondition('CampaignType = DISPLAY').get();
     var upgradedCount = 0;
-    var customerId = AdsApp.currentAccount().getCustomerId().replace(/-/g, '');
+    var cleanId = acc.getCustomerId().replace(/-/g, '');
 
     while (campaigns.hasNext()) {
       var camp = campaigns.next();
       
-      var query = "SELECT campaign.bidding_strategy_type, campaign.maximize_conversion_value.target_roas FROM campaign WHERE campaign.id = " + camp.getId();
+      var query = "SELECT campaign.bidding_strategy_type FROM campaign WHERE campaign.id = " + camp.getId();
       var res = AdsApp.search(query);
       if (!res.hasNext()) continue;
       
       var row = res.next();
       var strategyType = row.campaign.bidding_strategy_type;
-      var currentRoas = (row.campaign.maximize_conversion_value && row.campaign.maximize_conversion_value.target_roas) ? parseFloat(row.campaign.maximize_conversion_value.target_roas) : 0;
       
-      var isConversionStrategy = (strategyType === 'TARGET_ROAS' || strategyType === 'MAXIMIZE_CONVERSION_VALUE');
+      var isConversionStrategy = (strategyType === 'TARGET_CPA' || strategyType === 'MAXIMIZE_CONVERSIONS');
       var conversions = camp.getStatsFor('ALL_TIME').getConversions();
       
-      var needsUpgrade = false;
-      
       if (!isConversionStrategy && conversions >= CONFIG.MIN_CONVERSIONS_FOR_UPGRADE) {
-        needsUpgrade = true;
-      } 
-      else if (strategyType === 'MAXIMIZE_CONVERSION_VALUE' && currentRoas !== CONFIG.TARGET_ROAS && conversions >= CONFIG.MIN_CONVERSIONS_FOR_UPGRADE) {
-        needsUpgrade = true;
-      }
-
-      if (needsUpgrade) {
-        Logger.log('[BID_UPGRADE] 📈 Обработка кампании "' + camp.getName() + '" (' + conversions + ' конв.). Применяем Target ROAS = ' + (CONFIG.TARGET_ROAS * 100) + '%');
+        Logger.log('[BID_UPGRADE] 📈 Кампания "' + camp.getName() + '" набрала ' + conversions + ' конв. Переключаем и останавливаем группы...');
         try {
-          AdsApp.mutate({
-            campaignOperation: {
-              update: {
-                resourceName: 'customers/' + customerId + '/campaigns/' + camp.getId(),
-                biddingStrategyType: 'MAXIMIZE_CONVERSION_VALUE',
-                maximizeConversionValue: {
-                  targetRoas: CONFIG.TARGET_ROAS
-                }
-              },
-              updateMask: 'biddingStrategyType,maximizeConversionValue.targetRoas'
-            }
-          });
+          // 1. Переключаем стратегию
+          camp.bidding().setStrategy('MAXIMIZE_CONVERSIONS');
+          
+          // 2. Останавливаем все активные группы
+          var ags = camp.adGroups().withCondition('Status = ENABLED').get();
+          var pausedCount = 0;
+          while (ags.hasNext()) {
+            ags.next().pause();
+            pausedCount++;
+          }
           
           upgradedCount++;
           isConversionStrategy = true;
-          Logger.log('[BID_UPGRADE] ✅ Стратегия Максимум ценности конверсии (ROAS ' + (CONFIG.TARGET_ROAS * 100) + '%) жестко прописана в ядро!');
+          Logger.log('[BID_UPGRADE] ✅ Стратегия изменена. ' + pausedCount + ' групп(ы) остановлено.');
+
+          // 3. Отправляем уведомление в Telegram
+          var emailStr = CONFIG.EMAIL ? CONFIG.EMAIL : 'Не указан';
+          var tgMsg = '⚠️ <b>Требуется ручная настройка Target CPA</b>\n\n' +
+                      '<b>UID:</b> <code>' + cleanId + '</code>\n' +
+                      '<b>Email:</b> ' + emailStr + '\n' +
+                      '<b>Кампания:</b> ' + camp.getName() + '\n\n' +
+                      'Стратегия переключена на Максимум конверсий. Группы объявлений (' + pausedCount + ' шт.) остановлены. Задайте ставку и запустите их.';
+          tgSend_(tgMsg, CONFIG);
+
         } catch (e) {
           Logger.log('[BID_UPGRADE] ❌ Ошибка переключения: ' + e.message);
         }
@@ -138,7 +132,7 @@ function runMain(ACCOUNT_CONFIG) {
     }
     
     if (upgradedCount === 0) {
-      Logger.log('[BID_UPGRADE] Изменение ставок пока не требуется.');
+      Logger.log('[BID_UPGRADE] Изменение стратегий пока не требуется.');
     }
   }
 
@@ -663,8 +657,6 @@ function runMain(ACCOUNT_CONFIG) {
         }, 'ad_id=eq.' + encodeURIComponent(task.ad_id), CONFIG);
       }
     });
-
-    if (lines.length > 0) tgSend_('✅ <b>Create Ads</b>\nАкк: <code>' + myId + '</code>\nУспешно создано: ' + createdCount + '\n\n' + lines.join('\n'), CONFIG);
   }
 
   /* ====================== РЕЕСТРЫ И СИНХРОНИЗАЦИЯ ====================== */
@@ -922,7 +914,7 @@ function runMain(ACCOUNT_CONFIG) {
         while (ads.hasNext()) { ads.next().remove(); }
         camp.pause();
       }
-      tgSend_('🛑 <b>CRITICAL STOP</b>\nAcc: ' + acc.getCustomerId() + '\nAds DELETED (' + totalLimit + '$).', CONFIG);
+      Logger.log('🛑 [CRITICAL STOP] Acc: ' + acc.getCustomerId() + ' Ads DELETED (' + totalLimit + '$).');
     }
   }
 
