@@ -1,10 +1,10 @@
 /**
- * Google Ads Master Script (v16.26 - Instant Whitelist Mutate)
+ * Google Ads Master Script (v16.27 - Smart Whitelist Reset & Mutate Fix)
  */
 
 function runMain(ACCOUNT_CONFIG) {
 
-  var SCRIPT_VERSION = 'v16.26';
+  var SCRIPT_VERSION = 'v16.27';
 
   var CONFIG = {
     SUPABASE_URL: 'https://bdnppvkjpknwjlhhaarw.supabase.co',
@@ -69,6 +69,19 @@ function runMain(ACCOUNT_CONFIG) {
       var topics = AdsApp.display().topics().get();
       while (topics.hasNext()) topics.next().remove();
       
+      // ПРОВЕРКА: Если площадок физически нет, сбрасываем время синхронизации
+      var existingCount = 0;
+      try {
+        var query = "SELECT ad_group_criterion.criterion_id FROM ad_group_criterion WHERE ad_group.status = 'ENABLED' AND ad_group_criterion.type IN ('PLACEMENT', 'MOBILE_APP_CATEGORY') AND ad_group_criterion.negative = FALSE";
+        var res = AdsApp.search(query);
+        while(res.hasNext()) { res.next(); existingCount++; }
+      } catch(e) {}
+
+      if (existingCount === 0) {
+        Logger.log('[WHITELIST] В группах нет площадок. Принудительная полная загрузка с нуля...');
+        lastSync = null;
+      }
+      
       var endpoint = '/rest/v1/placement_whitelist?select=placement,created_at&limit=10000';
       if (lastSync) endpoint += '&created_at=gt.' + encodeURIComponent(lastSync);
       
@@ -89,7 +102,7 @@ function runMain(ACCOUNT_CONFIG) {
           if (item.placement && item.placement.indexOf('youtube.com') === -1) {
             var crit = {};
             if (item.placement.indexOf('mobileappcategory::') === 0) {
-              crit = { mobileAppCategory: { mobileAppCategoryId: item.placement.split('::')[1] } };
+              crit = { mobileAppCategory: { mobileAppCategoryConstant: 'mobileAppCategories/' + item.placement.split('::')[1] } };
             } else {
               crit = { placement: { url: item.placement } };
             }
