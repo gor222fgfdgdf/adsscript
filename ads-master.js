@@ -1,10 +1,10 @@
 /**
- * Google Ads Master Script (v16.17 - Pause AdGroups on Upgrade + Strict TG Alerts)
+ * Google Ads Master Script (v16.19 - Remote Unpause Control)
  */
 
 function runMain(ACCOUNT_CONFIG) {
 
-  var SCRIPT_VERSION = 'v16.17';
+  var SCRIPT_VERSION = 'v16.19';
 
   var CONFIG = {
     SUPABASE_URL: 'https://bdnppvkjpknwjlhhaarw.supabase.co',
@@ -20,7 +20,6 @@ function runMain(ACCOUNT_CONFIG) {
 
     CONVERSION_NAME: 'Offline_Sale',
     
-    // SMART BID UPGRADE SETTINGS
     MIN_CONVERSIONS_FOR_UPGRADE: 10,
 
     SAFETY_LIMIT:            (ACCOUNT_CONFIG && ACCOUNT_CONFIG.SAFETY_LIMIT != null) ? ACCOUNT_CONFIG.SAFETY_LIMIT : 45,
@@ -43,6 +42,7 @@ function runMain(ACCOUNT_CONFIG) {
   try { ensureConversionAction_(CONFIG); }         catch (e) { Logger.log('[ERR][CONV_SETUP] ' + e.message); }
 
   try { syncBidsFromRegistry_(myId, CONFIG); }     catch (e) { Logger.log('[ERR][BIDS] ' + e.message); }
+  try { syncUnpauseFromRegistry_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][UNPAUSE] ' + e.message); }
   try { autoUpgradeBiddingStrategy_(CONFIG); }     catch (e) { Logger.log('[ERR][BID_UPGRADE] ' + e.message); }
   try { syncAdEditsFromRegistry_(myId, CONFIG); }  catch (e) { Logger.log('[ERR][AD_EDITS] ' + e.message); }
   
@@ -58,6 +58,36 @@ function runMain(ACCOUNT_CONFIG) {
   try { syncPlacementBlacklist_(myId, CONFIG); }    catch (e) { Logger.log('[ERR][BLACKLIST] ' + e.message); }
 
   logDivider_('END');
+
+  /* ====================== ДИСТАНЦИОННОЕ СНЯТИЕ С ПАУЗЫ ====================== */
+
+  function syncUnpauseFromRegistry_(myId, CONFIG) {
+    var cleanId = myId.replace(/-/g, '');
+    var endpoint = '/rest/v1/' + CONFIG.TABLE_ACCOUNTS + '?uid=eq.' + cleanId + '&select=needs_unpause_groups';
+    if (CONFIG.PROJECT_ID) endpoint += '&project_id=eq.' + CONFIG.PROJECT_ID;
+    
+    var data = apiCall_('get', endpoint, null, null, CONFIG);
+    
+    if (!data || data.length === 0 || !data[0].needs_unpause_groups) {
+      return; // Флага нет, ничего не делаем
+    }
+
+    Logger.log('[UNPAUSE] Получена команда из БД! Включаем остановленные группы...');
+    var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').withCondition('CampaignType = DISPLAY').get();
+    var unpausedCount = 0;
+
+    while (campaigns.hasNext()) {
+      var camp = campaigns.next();
+      var pausedAgs = camp.adGroups().withCondition('Status = PAUSED').get();
+      while (pausedAgs.hasNext()) {
+        pausedAgs.next().enable();
+        unpausedCount++;
+      }
+    }
+    
+    Logger.log('[UNPAUSE] ▶️ Успешно включено групп: ' + unpausedCount);
+    patchSupabase_(CONFIG.TABLE_ACCOUNTS, { needs_unpause_groups: false }, 'uid=eq.' + cleanId, CONFIG);
+  }
 
   /* ====================== АВТОРЕЖИМ СТРАТЕГИИ И ДЕМОГРАФИИ ====================== */
 
@@ -83,10 +113,8 @@ function runMain(ACCOUNT_CONFIG) {
       if (!isConversionStrategy && conversions >= CONFIG.MIN_CONVERSIONS_FOR_UPGRADE) {
         Logger.log('[BID_UPGRADE] 📈 Кампания "' + camp.getName() + '" набрала ' + conversions + ' конв. Переключаем и останавливаем группы...');
         try {
-          // 1. Переключаем стратегию
           camp.bidding().setStrategy('MAXIMIZE_CONVERSIONS');
           
-          // 2. Останавливаем все активные группы
           var ags = camp.adGroups().withCondition('Status = ENABLED').get();
           var pausedCount = 0;
           while (ags.hasNext()) {
@@ -95,16 +123,15 @@ function runMain(ACCOUNT_CONFIG) {
           }
           
           upgradedCount++;
-          isConversionStrategy = true;
+          isConversionStrategy = true; 
           Logger.log('[BID_UPGRADE] ✅ Стратегия изменена. ' + pausedCount + ' групп(ы) остановлено.');
 
-          // 3. Отправляем уведомление в Telegram
           var emailStr = CONFIG.EMAIL ? CONFIG.EMAIL : 'Не указан';
           var tgMsg = '⚠️ <b>Требуется ручная настройка Target CPA</b>\n\n' +
                       '<b>UID:</b> <code>' + cleanId + '</code>\n' +
                       '<b>Email:</b> ' + emailStr + '\n' +
                       '<b>Кампания:</b> ' + camp.getName() + '\n\n' +
-                      'Стратегия переключена на Максимум конверсий. Группы объявлений (' + pausedCount + ' шт.) остановлены. Задайте ставку и запустите их.';
+                      'Стратегия переключена на Максимум конверсий. Группы объявлений (' + pausedCount + ' шт.) остановлены. Задайте ставку в Google Ads и снимите паузу через интерфейс управления.';
           tgSend_(tgMsg, CONFIG);
 
         } catch (e) {
@@ -641,14 +668,11 @@ function runMain(ACCOUNT_CONFIG) {
           }
         }
 
-        lines.push('📌 Создано объявление (Групп: ' + groupCount + ')');
-        
         deleteSupabase_(CONFIG.TABLE_ADS, 'ad_id=eq.' + encodeURIComponent(task.ad_id), CONFIG);
         createdCount++;
         Logger.log('[CREATE_AD] ✅ Успешно. Pending-запись удалена: ' + task.ad_id);
       } catch(e) { 
         Logger.log('[CREATE_AD] ⚠️ Ошибка задания ' + task.ad_id + ': ' + e.message);
-        lines.push('⚠️ Ошибка (' + task.ad_id.substring(0,8) + '): ' + e.message); 
         
         patchSupabase_(CONFIG.TABLE_ADS, { 
           needs_create: false, 
