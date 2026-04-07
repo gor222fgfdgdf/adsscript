@@ -1,10 +1,10 @@
 /**
- * Google Ads Master Script (v16.24 - Whitelist & Blacklist Targeting)
+ * Google Ads Master Script (v16.25 - Targeting Fix)
  */
 
 function runMain(ACCOUNT_CONFIG) {
 
-  var SCRIPT_VERSION = 'v16.24';
+  var SCRIPT_VERSION = 'v16.25';
 
   var CONFIG = {
     SUPABASE_URL: 'https://bdnppvkjpknwjlhhaarw.supabase.co',
@@ -65,9 +65,9 @@ function runMain(ACCOUNT_CONFIG) {
     var lastSync = (accData && accData.length > 0) ? accData[0].blacklist_synced_at : null;
 
     if (accType === 'whitelist') {
-      Logger.log('[TARGETING] Режим WHITELIST. Отключение тем...');
-      var topics = AdsApp.display().topics().withCondition('Status = ENABLED').get();
-      while (topics.hasNext()) topics.next().pause();
+      Logger.log('[TARGETING] Режим WHITELIST. Удаление тем...');
+      var topics = AdsApp.display().topics().get();
+      while (topics.hasNext()) topics.next().remove();
       
       var endpoint = '/rest/v1/placement_whitelist?select=placement,created_at&limit=10000';
       if (lastSync) endpoint += '&created_at=gt.' + encodeURIComponent(lastSync);
@@ -117,7 +117,6 @@ function runMain(ACCOUNT_CONFIG) {
             var t = existingTopics.next();
             if (t.getTopicId() === 16) {
               found = true;
-              if (t.isPaused() || !t.isEnabled()) t.enable();
               break;
             }
           }
