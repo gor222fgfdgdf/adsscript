@@ -1,10 +1,10 @@
 /**
- * Google Ads Master Script (v16.12 - Target CPA Fix + Version Log)
+ * Google Ads Master Script (v16.13 - Native Target CPA + Version Log)
  */
 
 function runMain(ACCOUNT_CONFIG) {
 
-  var SCRIPT_VERSION = 'v16.12';
+  var SCRIPT_VERSION = 'v16.13';
 
   var CONFIG = {
     SUPABASE_URL: 'https://bdnppvkjpknwjlhhaarw.supabase.co',
@@ -69,13 +69,12 @@ function runMain(ACCOUNT_CONFIG) {
     Logger.log('[BID_UPGRADE] Проверка смарт-стратегий и демографии...');
     var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').withCondition('CampaignType = DISPLAY').get();
     var upgradedCount = 0;
-    var customerId = AdsApp.currentAccount().getCustomerId().replace(/-/g, '');
     var expectedMicros = Math.round(CONFIG.TARGET_CPA * 1000000);
 
     while (campaigns.hasNext()) {
       var camp = campaigns.next();
       
-      // Запрашиваем через GAQL точные данные по стратегии и ставке
+      // Запрашиваем точные данные по стратегии и ставке из базы Google
       var query = "SELECT campaign.bidding_strategy_type, campaign.maximize_conversions.target_cpa_micros FROM campaign WHERE campaign.id = " + camp.getId();
       var res = AdsApp.search(query);
       if (!res.hasNext()) continue;
@@ -89,11 +88,11 @@ function runMain(ACCOUNT_CONFIG) {
       
       var needsUpgrade = false;
       
-      // Случай 1: Кампания еще на ручной ставке
+      // 1: Кампания на ручном CPC, но уже набрала конверсии
       if (!isConversionStrategy && conversions >= CONFIG.MIN_CONVERSIONS_FOR_CPA) {
         needsUpgrade = true;
       } 
-      // Случай 2: Кампания уже переключена, но Target CPA не задан или отличается от конфига
+      // 2: Кампания на Максимум конверсий, но Target CPA не задан или отличается (наш застрявший случай)
       else if (strategyType === 'MAXIMIZE_CONVERSIONS' && targetCpaMicros !== expectedMicros && conversions >= CONFIG.MIN_CONVERSIONS_FOR_CPA) {
         needsUpgrade = true;
       }
@@ -101,26 +100,18 @@ function runMain(ACCOUNT_CONFIG) {
       if (needsUpgrade) {
         Logger.log('[BID_UPGRADE] 📈 Обработка кампании "' + camp.getName() + '" (' + conversions + ' конв.). Применяем Target CPA = ' + CONFIG.TARGET_CPA);
         try {
-          // ОДИН прямой запрос, который меняет И стратегию, И ставку одновременно
-          AdsApp.mutate({
-            campaignOperation: {
-              update: {
-                resourceName: 'customers/' + customerId + '/campaigns/' + camp.getId(),
-                maximizeConversions: { targetCpaMicros: expectedMicros }
-              },
-              updateMask: 'maximizeConversions'
-            }
-          });
+          // Родной и безопасный метод: устанавливаем стратегию и передаем настройки аргументом
+          camp.bidding().setStrategy('MAXIMIZE_CONVERSIONS', { targetCpa: CONFIG.TARGET_CPA });
           
           upgradedCount++;
-          isConversionStrategy = true; // Отмечаем для демографии ниже
+          isConversionStrategy = true; // Отмечаем для демографии
           Logger.log('[BID_UPGRADE] ✅ Стратегия и ставка успешно установлены!');
         } catch (e) {
           Logger.log('[BID_UPGRADE] ❌ Ошибка переключения: ' + e.message);
         }
       }
 
-      // Если кампания стала конверсионной, открываем возраст "Неизвестно"
+      // Если кампания на смарт-стратегии, открываем возраст "Неизвестно"
       if (isConversionStrategy) {
         try {
           var qDemo = "SELECT ad_group_criterion.resource_name, ad_group.name " +
