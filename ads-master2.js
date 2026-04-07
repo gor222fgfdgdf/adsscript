@@ -1,10 +1,10 @@
 /**
- * Google Ads Master Script (v16.31 - Mobile Apps URL Fallback)
+ * Google Ads Master Script (v16.32 - Native MobileApp Builder & Mutate Status Fix)
  */
 
 function runMain(ACCOUNT_CONFIG) {
 
-  var SCRIPT_VERSION = 'v16.31';
+  var SCRIPT_VERSION = 'v16.32';
 
   var CONFIG = {
     SUPABASE_URL: 'https://bdnppvkjpknwjlhhaarw.supabase.co',
@@ -106,6 +106,7 @@ function runMain(ACCOUNT_CONFIG) {
                     adGroupCriterionOperation: {
                       create: {
                         adGroup: 'customers/' + cleanId + '/adGroups/' + ag.getId(),
+                        status: 'ENABLED',
                         mobileAppCategory: { mobileAppCategoryConstant: 'mobileAppCategories/' + catId }
                       }
                     }
@@ -113,28 +114,34 @@ function runMain(ACCOUNT_CONFIG) {
                   addedCount++;
                 } else if (item.placement.indexOf('mobileapp::') === 0) {
                   var appData = item.placement.split('::')[1];
-                  var storeType = appData.split('-')[0];
-                  var appId = appData.substring(storeType.length + 1);
-                  var storeUrl = (storeType === '1') ? 'apps.apple.com/app/id' + appId : 'play.google.com/store/apps/details?id=' + appId;
-
+                  var success = false;
+                  
+                  // 1. Приоритетный метод: Нативный билдер приложений
                   try {
-                    AdsApp.mutate({
-                      adGroupCriterionOperation: {
-                        create: {
-                          adGroup: 'customers/' + cleanId + '/adGroups/' + ag.getId(),
-                          mobileApp: { appId: appData }
-                        }
-                      }
-                    });
-                    addedCount++;
-                  } catch(e) {}
-
-                  try {
-                    var op = ag.display().newPlacementBuilder().withUrl(storeUrl).build();
-                    if (op.isSuccessful()) addedCount++;
+                    var op = ag.display().newMobileAppBuilder().withAppId(appData).build();
+                    if (op.isSuccessful()) success = true;
                   } catch(e) {}
                   
+                  // 2. Fallback метод: Mutate API с обязательным status: 'ENABLED'
+                  if (!success) {
+                    try {
+                      AdsApp.mutate({
+                        adGroupCriterionOperation: {
+                          create: {
+                            adGroup: 'customers/' + cleanId + '/adGroups/' + ag.getId(),
+                            status: 'ENABLED',
+                            mobileApp: { appId: appData }
+                          }
+                        }
+                      });
+                      success = true;
+                    } catch(e) {}
+                  }
+                  
+                  if (success) addedCount++;
+                  
                 } else {
+                  // Для классических веб-сайтов
                   var op = ag.display().newPlacementBuilder().withUrl(item.placement).build();
                   if (op.isSuccessful()) addedCount++;
                 }
@@ -253,7 +260,9 @@ function runMain(ACCOUNT_CONFIG) {
           camp.bidding().setStrategy('MANUAL_CPC');
           Logger.log('[REVERT] Кампания "' + camp.getName() + '" переведена обратно на MANUAL_CPC.');
           revertedCount++;
-        } catch (e) {}
+        } catch (e) {
+          Logger.log('[REVERT] Ошибка возврата: ' + e.message);
+        }
       }
     }
     
