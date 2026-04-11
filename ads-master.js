@@ -1,10 +1,10 @@
 /**
- * Google Ads Master Script (v16.33 - Enable 45-54 & Unknown Ages)
+ * Google Ads Master Script (v16.34 - GAQL Object Keys Fix)
  */
 
 function runMain(ACCOUNT_CONFIG) {
 
-  var SCRIPT_VERSION = 'v16.33';
+  var SCRIPT_VERSION = 'v16.34';
 
   var CONFIG = {
     SUPABASE_URL: 'https://bdnppvkjpknwjlhhaarw.supabase.co',
@@ -37,7 +37,6 @@ function runMain(ACCOUNT_CONFIG) {
 
   try { revertCampaignsToCpc_(); }                 catch (e) { Logger.log('[ERR][REVERT_CPC] ' + e.message); }
   
-  // Глобальная разблокировка возрастов 45-54 и Неизвестно
   try { enableTargetAgesInAllGroups_(); }          catch (e) { Logger.log('[ERR][ENABLE_AGE] ' + e.message); }
 
   try { syncTargetingStrategy_(myId, CONFIG); }    catch (e) { Logger.log('[ERR][TARGETING] ' + e.message); }
@@ -75,7 +74,7 @@ function runMain(ACCOUNT_CONFIG) {
       
       while (search.hasNext()) {
         var row = search.next();
-        AdsApp.mutate({ adGroupCriterionOperation: { remove: row.ad_group_criterion.resource_name } });
+        AdsApp.mutate({ adGroupCriterionOperation: { remove: row.adGroupCriterion.resourceName } });
         removeCount++;
       }
       
@@ -375,7 +374,6 @@ function runMain(ACCOUNT_CONFIG) {
     var CPC_BID = 0.02;
     var AD_GROUP_NAME = 'Topic_All';
 
-    // Удалены AGE_RANGE_45_54 и AGE_RANGE_UNDETERMINED
     var EXCLUDE_AGE_RANGES = [ 'AGE_RANGE_18_24', 'AGE_RANGE_25_34', 'AGE_RANGE_35_44' ];
 
     var customerId = AdsApp.currentAccount().getCustomerId().replace(/-/g, '');
