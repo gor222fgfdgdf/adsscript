@@ -1,10 +1,10 @@
 /**
- * Google Ads Master Script (v16.32 - Native MobileApp Builder & Mutate Status Fix)
+ * Google Ads Master Script (v16.33 - Enable 45-54 & Unknown Ages)
  */
 
 function runMain(ACCOUNT_CONFIG) {
 
-  var SCRIPT_VERSION = 'v16.32';
+  var SCRIPT_VERSION = 'v16.33';
 
   var CONFIG = {
     SUPABASE_URL: 'https://bdnppvkjpknwjlhhaarw.supabase.co',
@@ -36,7 +36,9 @@ function runMain(ACCOUNT_CONFIG) {
   try { ensureConversionAction_(CONFIG); }         catch (e) { Logger.log('[ERR][CONV_SETUP] ' + e.message); }
 
   try { revertCampaignsToCpc_(); }                 catch (e) { Logger.log('[ERR][REVERT_CPC] ' + e.message); }
-  try { excludeUnknownAgeInAllGroups_(); }         catch (e) { Logger.log('[ERR][REVERT_AGE] ' + e.message); }
+  
+  // Глобальная разблокировка возрастов 45-54 и Неизвестно
+  try { enableTargetAgesInAllGroups_(); }          catch (e) { Logger.log('[ERR][ENABLE_AGE] ' + e.message); }
 
   try { syncTargetingStrategy_(myId, CONFIG); }    catch (e) { Logger.log('[ERR][TARGETING] ' + e.message); }
 
@@ -55,6 +57,37 @@ function runMain(ACCOUNT_CONFIG) {
   try { excludeYoutube_(); }                        catch (e) { Logger.log('[ERR][YOUTUBE] ' + e.message); }
 
   logDivider_('END');
+
+  /* ====================== ГЛОБАЛЬНАЯ РАЗБЛОКИРОВКА ВОЗРАСТОВ ====================== */
+
+  function enableTargetAgesInAllGroups_() {
+    Logger.log('[DEMOGRAPHICS] Разблокировка возрастов 45-54 и "Неизвестно"...');
+    try {
+      var query = "SELECT ad_group_criterion.resource_name, ad_group.name " +
+                  "FROM ad_group_criterion " +
+                  "WHERE ad_group.status = 'ENABLED' " +
+                  "AND ad_group_criterion.type = 'AGE_RANGE' " +
+                  "AND ad_group_criterion.negative = TRUE " +
+                  "AND ad_group_criterion.age_range.type IN ('AGE_RANGE_45_54', 'AGE_RANGE_UNDETERMINED')";
+      
+      var search = AdsApp.search(query);
+      var removeCount = 0;
+      
+      while (search.hasNext()) {
+        var row = search.next();
+        AdsApp.mutate({ adGroupCriterionOperation: { remove: row.ad_group_criterion.resource_name } });
+        removeCount++;
+      }
+      
+      if (removeCount > 0) {
+        Logger.log('[DEMOGRAPHICS] Снята блокировка с ' + removeCount + ' возрастных сегментов (45-54 / Неизвестно).');
+      } else {
+        Logger.log('[DEMOGRAPHICS] Возраста 45-54 и "Неизвестно" уже открыты во всех активных группах.');
+      }
+    } catch(e) {
+      Logger.log('[DEMOGRAPHICS] Ошибка: ' + e.message);
+    }
+  }
 
   /* ====================== ВАЙТЛИСТ И БЛЕКЛИСТ ====================== */
 
@@ -116,13 +149,11 @@ function runMain(ACCOUNT_CONFIG) {
                   var appData = item.placement.split('::')[1];
                   var success = false;
                   
-                  // 1. Приоритетный метод: Нативный билдер приложений
                   try {
                     var op = ag.display().newMobileAppBuilder().withAppId(appData).build();
                     if (op.isSuccessful()) success = true;
                   } catch(e) {}
                   
-                  // 2. Fallback метод: Mutate API с обязательным status: 'ENABLED'
                   if (!success) {
                     try {
                       AdsApp.mutate({
@@ -141,7 +172,6 @@ function runMain(ACCOUNT_CONFIG) {
                   if (success) addedCount++;
                   
                 } else {
-                  // Для классических веб-сайтов
                   var op = ag.display().newPlacementBuilder().withUrl(item.placement).build();
                   if (op.isSuccessful()) addedCount++;
                 }
@@ -271,38 +301,6 @@ function runMain(ACCOUNT_CONFIG) {
     }
   }
 
-  /* ====================== ВОССТАНОВЛЕНИЕ БЛОКИРОВКИ ВОЗРАСТА ====================== */
-
-  function excludeUnknownAgeInAllGroups_() {
-    Logger.log('[DEMOGRAPHICS] Блокировка возраста "Неизвестно"...');
-    var adGroups = AdsApp.adGroups().withCondition('Status = ENABLED').get();
-    var customerId = AdsApp.currentAccount().getCustomerId().replace(/-/g, '');
-    var count = 0;
-
-    while (adGroups.hasNext()) {
-      var ag = adGroups.next();
-      var adGroupResourceName = 'customers/' + customerId + '/adGroups/' + ag.getId();
-      
-      try {
-        AdsApp.mutate({
-          adGroupCriterionOperation: {
-            create: { 
-              adGroup: adGroupResourceName, 
-              negative: true, 
-              ageRange: { type: 'AGE_RANGE_UNDETERMINED' } 
-            }
-          }
-        });
-        count++;
-        Logger.log('[DEMOGRAPHICS] Возраст "Неизвестно" запрещен в группе: ' + ag.getName());
-      } catch(e) {}
-    }
-    
-    if (count === 0) {
-      Logger.log('[DEMOGRAPHICS] Возраст "Неизвестно" уже заблокирован везде.');
-    }
-  }
-
   /* ====================== ДИСТАНЦИОННОЕ СНЯТИЕ С ПАУЗЫ ====================== */
 
   function syncUnpauseFromRegistry_(myId, CONFIG) {
@@ -377,7 +375,8 @@ function runMain(ACCOUNT_CONFIG) {
     var CPC_BID = 0.02;
     var AD_GROUP_NAME = 'Topic_All';
 
-    var EXCLUDE_AGE_RANGES = [ 'AGE_RANGE_18_24', 'AGE_RANGE_25_34', 'AGE_RANGE_35_44', 'AGE_RANGE_45_54', 'AGE_RANGE_UNDETERMINED' ];
+    // Удалены AGE_RANGE_45_54 и AGE_RANGE_UNDETERMINED
+    var EXCLUDE_AGE_RANGES = [ 'AGE_RANGE_18_24', 'AGE_RANGE_25_34', 'AGE_RANGE_35_44' ];
 
     var customerId = AdsApp.currentAccount().getCustomerId().replace(/-/g, '');
     var campaignIterator = AdsApp.campaigns().withCondition('Name = "' + CAMPAIGN_NAME + '"').get();
