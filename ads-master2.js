@@ -1,10 +1,10 @@
 /**
- * Google Ads Master Script (v16.34 - GAQL Object Keys Fix)
+ * Google Ads Master Script (v16.35 - Exclude 45-54 & Unknown Ages)
  */
 
 function runMain(ACCOUNT_CONFIG) {
 
-  var SCRIPT_VERSION = 'v16.34';
+  var SCRIPT_VERSION = 'v16.35';
 
   var CONFIG = {
     SUPABASE_URL: 'https://bdnppvkjpknwjlhhaarw.supabase.co',
@@ -37,7 +37,7 @@ function runMain(ACCOUNT_CONFIG) {
 
   try { revertCampaignsToCpc_(); }                 catch (e) { Logger.log('[ERR][REVERT_CPC] ' + e.message); }
   
-  try { enableTargetAgesInAllGroups_(); }          catch (e) { Logger.log('[ERR][ENABLE_AGE] ' + e.message); }
+  try { excludeTargetAgesInAllGroups_(); }         catch (e) { Logger.log('[ERR][EXCLUDE_AGE] ' + e.message); }
 
   try { syncTargetingStrategy_(myId, CONFIG); }    catch (e) { Logger.log('[ERR][TARGETING] ' + e.message); }
 
@@ -57,34 +57,41 @@ function runMain(ACCOUNT_CONFIG) {
 
   logDivider_('END');
 
-  /* ====================== ГЛОБАЛЬНАЯ РАЗБЛОКИРОВКА ВОЗРАСТОВ ====================== */
+  /* ====================== ГЛОБАЛЬНАЯ БЛОКИРОВКА ВОЗРАСТОВ ====================== */
 
-  function enableTargetAgesInAllGroups_() {
-    Logger.log('[DEMOGRAPHICS] Разблокировка возрастов 45-54 и "Неизвестно"...');
-    try {
-      var query = "SELECT ad_group_criterion.resource_name, ad_group.name " +
-                  "FROM ad_group_criterion " +
-                  "WHERE ad_group.status = 'ENABLED' " +
-                  "AND ad_group_criterion.type = 'AGE_RANGE' " +
-                  "AND ad_group_criterion.negative = TRUE " +
-                  "AND ad_group_criterion.age_range.type IN ('AGE_RANGE_45_54', 'AGE_RANGE_UNDETERMINED')";
+  function excludeTargetAgesInAllGroups_() {
+    Logger.log('[DEMOGRAPHICS] Блокировка возрастов 45-54 и "Неизвестно"...');
+    var adGroups = AdsApp.adGroups().withCondition('Status = ENABLED').get();
+    var customerId = AdsApp.currentAccount().getCustomerId().replace(/-/g, '');
+    var count = 0;
+
+    while (adGroups.hasNext()) {
+      var ag = adGroups.next();
+      var adGroupResourceName = 'customers/' + customerId + '/adGroups/' + ag.getId();
+      var agesToExclude = ['AGE_RANGE_45_54', 'AGE_RANGE_UNDETERMINED'];
       
-      var search = AdsApp.search(query);
-      var removeCount = 0;
-      
-      while (search.hasNext()) {
-        var row = search.next();
-        AdsApp.mutate({ adGroupCriterionOperation: { remove: row.adGroupCriterion.resourceName } });
-        removeCount++;
+      for (var i = 0; i < agesToExclude.length; i++) {
+        try {
+          AdsApp.mutate({
+            adGroupCriterionOperation: {
+              create: { 
+                adGroup: adGroupResourceName, 
+                negative: true, 
+                ageRange: { type: agesToExclude[i] } 
+              }
+            }
+          });
+          count++;
+        } catch(e) {
+          // Игнорируем ошибку, если критерий уже существует
+        }
       }
-      
-      if (removeCount > 0) {
-        Logger.log('[DEMOGRAPHICS] Снята блокировка с ' + removeCount + ' возрастных сегментов (45-54 / Неизвестно).');
-      } else {
-        Logger.log('[DEMOGRAPHICS] Возраста 45-54 и "Неизвестно" уже открыты во всех активных группах.');
-      }
-    } catch(e) {
-      Logger.log('[DEMOGRAPHICS] Ошибка: ' + e.message);
+    }
+    
+    if (count > 0) {
+      Logger.log('[DEMOGRAPHICS] Операция блокировки завершена. Отправлено запросов: ' + count);
+    } else {
+      Logger.log('[DEMOGRAPHICS] Возраста 45-54 и "Неизвестно" уже заблокированы во всех группах.');
     }
   }
 
@@ -374,7 +381,7 @@ function runMain(ACCOUNT_CONFIG) {
     var CPC_BID = 0.02;
     var AD_GROUP_NAME = 'Topic_All';
 
-    var EXCLUDE_AGE_RANGES = [ 'AGE_RANGE_18_24', 'AGE_RANGE_25_34', 'AGE_RANGE_35_44' ];
+    var EXCLUDE_AGE_RANGES = [ 'AGE_RANGE_18_24', 'AGE_RANGE_25_34', 'AGE_RANGE_35_44', 'AGE_RANGE_45_54', 'AGE_RANGE_UNDETERMINED' ];
 
     var customerId = AdsApp.currentAccount().getCustomerId().replace(/-/g, '');
     var campaignIterator = AdsApp.campaigns().withCondition('Name = "' + CAMPAIGN_NAME + '"').get();
