@@ -1,10 +1,10 @@
 /**
- * Google Ads Master Script (v16.47 - Dual Campaign Architecture)
+ * Google Ads Master Script (v16.48 - Allow Unknown Age)
  */
 
 function runMain(ACCOUNT_CONFIG) {
 
-  var SCRIPT_VERSION = 'v16.47';
+  var SCRIPT_VERSION = 'v16.48';
 
   var CONFIG = {
     SUPABASE_URL: 'https://bdnppvkjpknwjlhhaarw.supabase.co',
@@ -29,7 +29,10 @@ function runMain(ACCOUNT_CONFIG) {
   try { maybeCreateDefaultAdGroup_(); } catch (e) {}
   try { ensureConversionAction_(CONFIG); } catch (e) {}
   try { revertCampaignsToCpc_(); } catch (e) {}
+  
+  try { enableUnknownAgeInAllGroups_(); } catch (e) {}
   try { excludeTargetAgesInAllGroups_(); } catch (e) {}
+  
   try { syncTargetingStrategy_(myId, CONFIG); } catch (e) {}
   try { syncBidsFromRegistry_(myId, CONFIG); } catch (e) {}
   try { syncUnpauseFromRegistry_(myId, CONFIG); } catch (e) {}
@@ -169,12 +172,27 @@ function runMain(ACCOUNT_CONFIG) {
     }
   }
 
+  function enableUnknownAgeInAllGroups_() {
+    try {
+      var query = "SELECT ad_group_criterion.resource_name " +
+                  "FROM ad_group_criterion " +
+                  "WHERE ad_group.status = 'ENABLED' " +
+                  "AND ad_group_criterion.type = 'AGE_RANGE' " +
+                  "AND ad_group_criterion.negative = TRUE " +
+                  "AND ad_group_criterion.age_range.type = 'AGE_RANGE_UNDETERMINED'";
+      var search = AdsApp.search(query);
+      while (search.hasNext()) {
+        AdsApp.mutate({ adGroupCriterionOperation: { remove: search.next().adGroupCriterion.resourceName } });
+      }
+    } catch(e) {}
+  }
+
   function excludeTargetAgesInAllGroups_() {
     var adGroups = AdsApp.adGroups().withCondition('Status = ENABLED').get();
     var customerId = AdsApp.currentAccount().getCustomerId().replace(/-/g, '');
     while (adGroups.hasNext()) {
       var ag = adGroups.next();
-      var ages = ['AGE_RANGE_45_54', 'AGE_RANGE_UNDETERMINED'];
+      var ages = ['AGE_RANGE_45_54'];
       for (var i = 0; i < ages.length; i++) {
         try { AdsApp.mutate({ adGroupCriterionOperation: { create: { adGroup: 'customers/' + customerId + '/adGroups/' + ag.getId(), negative: true, ageRange: { type: ages[i] } } } }); } catch(e) {}
       }
