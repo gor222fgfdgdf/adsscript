@@ -1,10 +1,10 @@
 /**
- * Google Ads Master Script (v16.41 - Safe Gmail Sync)
+ * Google Ads Master Script (v16.42 - Native Gmail Error Logging)
  */
 
 function runMain(ACCOUNT_CONFIG) {
 
-  var SCRIPT_VERSION = 'v16.41';
+  var SCRIPT_VERSION = 'v16.42';
 
   var CONFIG = {
     SUPABASE_URL: 'https://bdnppvkjpknwjlhhaarw.supabase.co',
@@ -74,7 +74,7 @@ function runMain(ACCOUNT_CONFIG) {
     };
 
     if (!CONFIG.SYNC_GMAIL_STATUSES) {
-      Logger.log('[GMAIL] Синхронизация статусов отключена в загрузчике. Пропуск.');
+      Logger.log('[GMAIL] Синхронизация отключена в конфиге. Пропуск.');
       return status;
     }
 
@@ -117,7 +117,7 @@ function runMain(ACCOUNT_CONFIG) {
         if (status.doc_verification && status.payment_verification && status.pause_status) break;
       }
     } catch(e) {
-      Logger.log('[GMAIL] ⚠️ Ошибка доступа к GmailApp (вероятно, не выдано разрешение). Статусы пропущены.');
+      Logger.log('[GMAIL] ⚠️ Сбой чтения почты: ' + e.message);
     }
 
     return status;
