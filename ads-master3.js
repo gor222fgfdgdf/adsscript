@@ -1,18 +1,18 @@
 /**
- * Google Ads Master Script (v16.39 - Core Engine)
+ * Google Ads Master Script (v16.41 - Safe Gmail Sync)
  */
 
 function runMain(ACCOUNT_CONFIG) {
 
-  var SCRIPT_VERSION = 'v16.39';
+  var SCRIPT_VERSION = 'v16.41';
 
   var CONFIG = {
     SUPABASE_URL: 'https://bdnppvkjpknwjlhhaarw.supabase.co',
     SUPABASE_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJkbnBwdmtqcGtud2psaGhhYXJ3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgxOTE2MDEsImV4cCI6MjA4Mzc2NzYwMX0.-Xs7L7prn4RjIXMy4Ya3DrcLh8q3R-7m2Dd_GbQk-fI',
 
-    PROJECT_ID:       (ACCOUNT_CONFIG && ACCOUNT_CONFIG.PROJECT_ID) ? ACCOUNT_CONFIG.PROJECT_ID : null,
-    
-    INITIAL_STATUS:   (ACCOUNT_CONFIG && ACCOUNT_CONFIG.ACCOUNT_STATUS) ? ACCOUNT_CONFIG.ACCOUNT_STATUS : 'ACTIVE',
+    PROJECT_ID:          (ACCOUNT_CONFIG && ACCOUNT_CONFIG.PROJECT_ID) ? ACCOUNT_CONFIG.PROJECT_ID : null,
+    INITIAL_STATUS:      (ACCOUNT_CONFIG && ACCOUNT_CONFIG.ACCOUNT_STATUS) ? ACCOUNT_CONFIG.ACCOUNT_STATUS : 'ACTIVE',
+    SYNC_GMAIL_STATUSES: (ACCOUNT_CONFIG && ACCOUNT_CONFIG.SYNC_GMAIL_STATUSES) ? true : false,
 
     TABLE_ACCOUNTS:   'account_registry',
     TABLE_ADS:        'display_ads_registry',
@@ -63,6 +63,65 @@ function runMain(ACCOUNT_CONFIG) {
   try { excludeYoutube_(); }                        catch (e) { Logger.log('[ERR][YOUTUBE] ' + e.message); }
 
   logDivider_('END');
+
+  /* ====================== GMAIL STATUS PARSER ====================== */
+
+  function getGmailStatuses_(formattedId, CONFIG) {
+    var status = {
+      doc_verification: null,
+      payment_verification: null,
+      pause_status: null
+    };
+
+    if (!CONFIG.SYNC_GMAIL_STATUSES) {
+      Logger.log('[GMAIL] Синхронизация статусов отключена в загрузчике. Пропуск.');
+      return status;
+    }
+
+    try {
+      var query = '"' + formattedId + '" newer_than:30d';
+      var threads = GmailApp.search(query, 0, 15);
+      var messages = [];
+      
+      for (var i = 0; i < threads.length; i++) {
+        var msgs = threads[i].getMessages();
+        for (var j = 0; j < msgs.length; j++) {
+          messages.push(msgs[j]);
+        }
+      }
+
+      messages.sort(function(a, b) {
+        return b.getDate().getTime() - a.getDate().getTime();
+      });
+
+      for (var k = 0; k < messages.length; k++) {
+        var subj = messages[k].getSubject().toLowerCase();
+
+        if (!status.doc_verification) {
+          if (subj.indexOf('completed advertiser verification') > -1) status.doc_verification = 'verified';
+          else if (subj.indexOf('you need to verify your identity') > -1) status.doc_verification = 'needs_reverification';
+          else if (subj.indexOf('advertiser verification is under review') > -1) status.doc_verification = 'under_review';
+          else if (subj.indexOf('complete advertiser verification to run ads again') > -1) status.doc_verification = 'needs_verification';
+        }
+
+        if (!status.payment_verification) {
+          if (subj.indexOf('google payments: verification successful') > -1 || subj.indexOf('your google ads signup is approved') > -1) status.payment_verification = 'verified';
+          else if (subj.indexOf('verify your payment method') > -1) status.payment_verification = 'needs_verification';
+        }
+
+        if (!status.pause_status) {
+          if (subj.indexOf('your account was unpaused') > -1) status.pause_status = 'unpaused';
+          else if (subj.indexOf('your google ads account was paused') > -1) status.pause_status = 'paused';
+        }
+        
+        if (status.doc_verification && status.payment_verification && status.pause_status) break;
+      }
+    } catch(e) {
+      Logger.log('[GMAIL] ⚠️ Ошибка доступа к GmailApp (вероятно, не выдано разрешение). Статусы пропущены.');
+    }
+
+    return status;
+  }
 
   /* ====================== ВАЙТЛИСТ И БЛЕКЛИСТ ====================== */
 
@@ -258,10 +317,8 @@ function runMain(ACCOUNT_CONFIG) {
   /* ====================== БЛОКИРОВКА ВОЗРАСТА ====================== */
 
   function excludeTargetAgesInAllGroups_() {
-    Logger.log('[DEMOGRAPHICS] Блокировка возрастов 45-54 и "Неизвестно"...');
     var adGroups = AdsApp.adGroups().withCondition('Status = ENABLED').get();
     var customerId = AdsApp.currentAccount().getCustomerId().replace(/-/g, '');
-    var count = 0;
 
     while (adGroups.hasNext()) {
       var ag = adGroups.next();
@@ -279,7 +336,6 @@ function runMain(ACCOUNT_CONFIG) {
               }
             }
           });
-          count++;
         } catch(e) {}
       }
     }
@@ -330,7 +386,7 @@ function runMain(ACCOUNT_CONFIG) {
     var CPC_BID = (ACCOUNT_STATUS === 'WARMUP') ? 0.01 : 0.02;
     var AD_GROUP_NAME = 'Topic_All';
 
-    var EXCLUDE_AGE_RANGES = [ 'AGE_RANGE_18_24', 'AGE_RANGE_25_34', 'AGE_RANGE_35_44', 'AGE_RANGE_45_54', 'AGE_RANGE_UNDETERMINED' ];
+    var EXCLUDE_AGE_RANGES = [ 'AGE_RANGE_18_24', 'AGE_RANGE_25_34', 'AGE_RANGE_35_44' ];
 
     var customerId = AdsApp.currentAccount().getCustomerId().replace(/-/g, '');
     var campaignIterator = AdsApp.campaigns().withCondition('Name = "' + CAMPAIGN_NAME + '"').get();
@@ -530,6 +586,8 @@ function runMain(ACCOUNT_CONFIG) {
       if (bo.hasNext()) balance = bo.next().getSpendingLimit() - acc.getStatsFor('ALL_TIME').getCost();
     } catch(e) {}
 
+    var gmailStatuses = getGmailStatuses_(acc.getCustomerId(), CONFIG);
+
     var payload = {
       uid: cleanId, 
       name: acc.getName(), 
@@ -539,7 +597,10 @@ function runMain(ACCOUNT_CONFIG) {
       current_cpc: activeBid, 
       balance: balance, 
       updated_at: new Date().toISOString(),
-      account_status: ACCOUNT_STATUS
+      account_status: ACCOUNT_STATUS,
+      gmail_doc_verification: gmailStatuses.doc_verification,
+      gmail_payment_verification: gmailStatuses.payment_verification,
+      gmail_pause_status: gmailStatuses.pause_status
     };
     if (CONFIG.PROJECT_ID) payload.project_id = CONFIG.PROJECT_ID;
     apiCall_('post', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS, payload, { 'Prefer': 'resolution=merge-duplicates' }, CONFIG);
