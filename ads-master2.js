@@ -1,8 +1,8 @@
 /**
- * Google Ads Master Script (v16.55 - Wipe All Ads)
+ * Google Ads Master Script (v16.56 - Stable Working Release)
  */
 function runMain(cfg) {
-  var SCRIPT_VERSION = 'v16.55';
+  var SCRIPT_VERSION = 'v16.56';
   var acc = AdsApp.currentAccount();
   var cleanId = acc.getCustomerId().replace(/-/g, '');
   
@@ -26,8 +26,9 @@ function runMain(cfg) {
   ctx.status = (accData && accData.length > 0 && accData[0].account_status) ? accData[0].account_status : ctx.config.ACCOUNT_STATUS;
   ctx.targetCamp = (ctx.status === 'WARMUP') ? 'Display-2' : 'Display-1';
 
+  Logger.log('[SYSTEM] Версия: ' + SCRIPT_VERSION + ' | Статус: ' + ctx.status + ' | Целевая кампания: ' + ctx.targetCamp);
+
   var modules = [
-    deleteAllAds_,
     checkSafetyLimitsStrict_, maybeCreateDefaultAdGroup_, ensureConversionAction_,
     revertCampaignsToCpc_, syncAgeDemographics_, syncTargetingStrategy_,
     syncBidsFromRegistry_, syncUnpauseFromRegistry_, syncAdEditsFromRegistry_,
@@ -38,13 +39,6 @@ function runMain(cfg) {
   modules.forEach(function(mod) {
     try { mod(ctx); } catch (e) {}
   });
-
-  function deleteAllAds_(ctx) {
-    var ads = AdsApp.ads().withCondition('Status != REMOVED').get();
-    while (ads.hasNext()) {
-      ads.next().remove();
-    }
-  }
 
   function updateAccountRegistry_(ctx) {
     var activeBid = 0, balance = 0;
