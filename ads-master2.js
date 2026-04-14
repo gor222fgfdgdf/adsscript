@@ -1,8 +1,8 @@
 /**
- * Google Ads Master Script (v16.53 - Strict Campaign Isolation)
+ * Google Ads Master Script (v16.54 - Exclude Unknown Age)
  */
 function runMain(cfg) {
-  var SCRIPT_VERSION = 'v16.53';
+  var SCRIPT_VERSION = 'v16.54';
   var acc = AdsApp.currentAccount();
   var cleanId = acc.getCustomerId().replace(/-/g, '');
   
@@ -117,13 +117,13 @@ function runMain(cfg) {
   }
 
   function syncAgeDemographics_(ctx) {
-    try {
-      var search = AdsApp.search("SELECT ad_group_criterion.resource_name FROM ad_group_criterion WHERE ad_group.status = 'ENABLED' AND ad_group_criterion.type = 'AGE_RANGE' AND ad_group_criterion.negative = TRUE AND ad_group_criterion.age_range.type = 'AGE_RANGE_UNDETERMINED'");
-      while (search.hasNext()) AdsApp.mutate({ adGroupCriterionOperation: { remove: search.next().adGroupCriterion.resourceName } });
-    } catch(e) {}
     var adGroups = AdsApp.adGroups().withCondition('Status = ENABLED').get();
     while (adGroups.hasNext()) {
-      try { AdsApp.mutate({ adGroupCriterionOperation: { create: { adGroup: 'customers/'+ctx.cleanId+'/adGroups/'+adGroups.next().getId(), negative: true, ageRange: { type: 'AGE_RANGE_45_54' } } } }); } catch(e) {}
+      var agId = adGroups.next().getId();
+      // Возвращена жесткая минусовка неизвестного возраста
+      ['AGE_RANGE_45_54', 'AGE_RANGE_UNDETERMINED'].forEach(function(age) {
+        try { AdsApp.mutate({ adGroupCriterionOperation: { create: { adGroup: 'customers/'+ctx.cleanId+'/adGroups/'+agId, negative: true, ageRange: { type: age } } } }); } catch(e) {}
+      });
     }
   }
 
@@ -196,7 +196,6 @@ function runMain(cfg) {
     if (!tasks) return;
     tasks.forEach(function(t) {
       try {
-        // Жестко льем объявление только в целевую кампанию текущего режима
         var ags = AdsApp.adGroups().withCondition('Status = ENABLED').withCondition('CampaignName = "'+ctx.targetCamp+'"').get();
         if (!ags.hasNext()) throw new Error('No active groups in ' + ctx.targetCamp);
 
@@ -247,7 +246,6 @@ function runMain(cfg) {
 
     var targetBid = (ctx.status === 'WARMUP') ? (data[0].warmup_cpc || 0.01) : (data[0].target_cpc || 0.05);
 
-    // Применяем ставку ТОЛЬКО к целевой кампании. Соседнюю не трогаем.
     var ags = AdsApp.adGroups().withCondition('Status = ENABLED').withCondition('CampaignName = "' + ctx.targetCamp + '"').get();
     while (ags.hasNext()) {
       var ag = ags.next();
