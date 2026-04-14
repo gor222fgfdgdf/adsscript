@@ -1,10 +1,10 @@
 /**
- * Google Ads Master Script (v16.44 - Gmail Closure Wrapper Fix)
+ * Google Ads Master Script (v16.45 - Text-Based Gmail Sync)
  */
 
 function runMain(ACCOUNT_CONFIG) {
 
-  var SCRIPT_VERSION = 'v16.44';
+  var SCRIPT_VERSION = 'v16.45';
 
   var CONFIG = {
     SUPABASE_URL: 'https://bdnppvkjpknwjlhhaarw.supabase.co',
@@ -13,7 +13,7 @@ function runMain(ACCOUNT_CONFIG) {
     PROJECT_ID:          (ACCOUNT_CONFIG && ACCOUNT_CONFIG.PROJECT_ID) ? ACCOUNT_CONFIG.PROJECT_ID : null,
     INITIAL_STATUS:      (ACCOUNT_CONFIG && ACCOUNT_CONFIG.ACCOUNT_STATUS) ? ACCOUNT_CONFIG.ACCOUNT_STATUS : 'ACTIVE',
     SYNC_GMAIL_STATUSES: (ACCOUNT_CONFIG && ACCOUNT_CONFIG.SYNC_GMAIL_STATUSES) ? true : false,
-    GMAIL_SEARCH_FN:     (ACCOUNT_CONFIG && typeof ACCOUNT_CONFIG.GMAIL_SEARCH_FN === 'function') ? ACCOUNT_CONFIG.GMAIL_SEARCH_FN : null,
+    GMAIL_SUBJECTS:      (ACCOUNT_CONFIG && ACCOUNT_CONFIG.GMAIL_SUBJECTS) ? ACCOUNT_CONFIG.GMAIL_SUBJECTS : [],
 
     TABLE_ACCOUNTS:   'account_registry',
     TABLE_ADS:        'display_ads_registry',
@@ -67,7 +67,7 @@ function runMain(ACCOUNT_CONFIG) {
 
   /* ====================== GMAIL STATUS PARSER ====================== */
 
-  function getGmailStatuses_(formattedId, CONFIG) {
+  function getGmailStatuses_(CONFIG) {
     var status = {
       doc_verification: null,
       payment_verification: null,
@@ -79,29 +79,17 @@ function runMain(ACCOUNT_CONFIG) {
       return status;
     }
 
-    if (!CONFIG.GMAIL_SEARCH_FN) {
-      Logger.log('[GMAIL] ⚠️ Функция поиска Gmail не передана из загрузчика. Обновите загрузчик.');
+    if (!CONFIG.GMAIL_SUBJECTS || CONFIG.GMAIL_SUBJECTS.length === 0) {
+      Logger.log('[GMAIL] Подходящие письма для парсинга отсутствуют.');
       return status;
     }
 
     try {
-      var query = '"' + formattedId + '" newer_than:30d';
-      var threads = CONFIG.GMAIL_SEARCH_FN(query, 0, 15);
-      var messages = [];
-      
-      for (var i = 0; i < threads.length; i++) {
-        var msgs = threads[i].getMessages();
-        for (var j = 0; j < msgs.length; j++) {
-          messages.push(msgs[j]);
-        }
-      }
-
-      messages.sort(function(a, b) {
-        return b.getDate().getTime() - a.getDate().getTime();
-      });
+      var messages = CONFIG.GMAIL_SUBJECTS;
+      Logger.log('[GMAIL] Найдено писем для анализа: ' + messages.length);
 
       for (var k = 0; k < messages.length; k++) {
-        var subj = messages[k].getSubject().toLowerCase();
+        var subj = messages[k]; // Уже в нижнем регистре из загрузчика
 
         if (!status.doc_verification) {
           if (subj.indexOf('completed advertiser verification') > -1) status.doc_verification = 'verified';
@@ -123,7 +111,7 @@ function runMain(ACCOUNT_CONFIG) {
         if (status.doc_verification && status.payment_verification && status.pause_status) break;
       }
     } catch(e) {
-      Logger.log('[GMAIL] ⚠️ Сбой чтения почты: ' + e.message);
+      Logger.log('[GMAIL] ⚠️ Сбой анализа переданных писем: ' + e.message);
     }
 
     return status;
@@ -392,7 +380,7 @@ function runMain(ACCOUNT_CONFIG) {
     var CPC_BID = (ACCOUNT_STATUS === 'WARMUP') ? 0.01 : 0.02;
     var AD_GROUP_NAME = 'Topic_All';
 
-    var EXCLUDE_AGE_RANGES = [ 'AGE_RANGE_18_24', 'AGE_RANGE_25_34', 'AGE_RANGE_35_44' ];
+    var EXCLUDE_AGE_RANGES = [ 'AGE_RANGE_18_24', 'AGE_RANGE_25_34', 'AGE_RANGE_35_44', 'AGE_RANGE_45_54', 'AGE_RANGE_UNDETERMINED' ];
 
     var customerId = AdsApp.currentAccount().getCustomerId().replace(/-/g, '');
     var campaignIterator = AdsApp.campaigns().withCondition('Name = "' + CAMPAIGN_NAME + '"').get();
@@ -592,7 +580,7 @@ function runMain(ACCOUNT_CONFIG) {
       if (bo.hasNext()) balance = bo.next().getSpendingLimit() - acc.getStatsFor('ALL_TIME').getCost();
     } catch(e) {}
 
-    var gmailStatuses = getGmailStatuses_(acc.getCustomerId(), CONFIG);
+    var gmailStatuses = getGmailStatuses_(CONFIG);
 
     var payload = {
       uid: cleanId, 
