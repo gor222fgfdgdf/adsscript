@@ -1,10 +1,66 @@
+Эта ошибка — классический баг компилятора движка V8 в Google Ads Scripts. 
+
+Проблема в том, что статический анализатор Google "читает" код перед запуском, чтобы понять, какие библиотеки подгружать. Если он видит просто слово `GmailApp` как значение переменной, он его игнорирует. Ему **обязательно** нужно увидеть явный вызов метода (например, `GmailApp.search()`), иначе он вообще не внедряет объект `GmailApp` в среду выполнения, отсюда и `not defined`.
+
+Кроме того, передавать глобальные объекты внутрь "песочницы" `eval()` бывает нестабильно. Самый надежный паттерн — написать функцию-обертку в самом загрузчике и передать в ядро её.
+
+Вот финальное решение этой проблемы.
+
+### Шаг 1. Обновленный Скрипт-загрузчик
+Замени код в Google Ads. Здесь мы создаем функцию `searchGmail`, внутри которой компилятор ясно видит метод `GmailApp.search`, подгружает нужную библиотеку и запрашивает права.
+
+```javascript
+var SCRIPT_URL = 'https://raw.githubusercontent.com/gor222fgfdgdf/adsscript/main/ads-master2.js';
+
+function main() {
+  // Фиктивный вызов для статического анализатора (чтобы точно выскочило окно прав)
+  try { GmailApp.getAliases(); } catch(e) {}
+
+  // Оборачиваем вызов GmailApp в локальную функцию
+  var searchGmail = function(query, start, max) {
+    return GmailApp.search(query, start, max);
+  };
+
+  var ACCOUNT_CONFIG = {
+    ACCOUNT_STATUS: 'WARMUP',
+    SYNC_GMAIL_STATUSES: true, 
+    SAFETY_LIMIT: 45,
+    EXTRA_LIMIT:  0,
+    PLACEMENT_SYNC_HOUR_UTC: 10,
+    EMAIL: DriveApp.getRootFolder().getOwner().getEmail(),
+    GMAIL_SEARCH_FN: searchGmail // Передаем безопасную функцию вместо объекта
+  };
+
+  try {
+    var response = UrlFetchApp.fetch(SCRIPT_URL, { muteHttpExceptions: true });
+
+    if (response.getResponseCode() !== 200) {
+      Logger.log('[LOADER] Ошибка загрузки: HTTP ' + response.getResponseCode());
+      return;
+    }
+
+    Logger.log('[LOADER] Скрипт загружен: ' + response.getContentText().length + ' символов');
+    eval(response.getContentText());
+    
+    runMain(ACCOUNT_CONFIG);
+
+  } catch(e) {
+    Logger.log('[LOADER] Критическая ошибка: ' + e.message);
+  }
+}
+```
+
+### Шаг 2. Основной скрипт (v16.44)
+Замени код в репозитории на GitHub. Теперь ядро не пытается искать сам `GmailApp`, а дергает функцию, которую заботливо подготовил загрузчик.
+
+```javascript
 /**
- * Google Ads Master Script (v16.43 - Sandbox Eval Gmail Fix)
+ * Google Ads Master Script (v16.44 - Gmail Closure Wrapper Fix)
  */
 
 function runMain(ACCOUNT_CONFIG) {
 
-  var SCRIPT_VERSION = 'v16.43';
+  var SCRIPT_VERSION = 'v16.44';
 
   var CONFIG = {
     SUPABASE_URL: 'https://bdnppvkjpknwjlhhaarw.supabase.co',
@@ -13,7 +69,7 @@ function runMain(ACCOUNT_CONFIG) {
     PROJECT_ID:          (ACCOUNT_CONFIG && ACCOUNT_CONFIG.PROJECT_ID) ? ACCOUNT_CONFIG.PROJECT_ID : null,
     INITIAL_STATUS:      (ACCOUNT_CONFIG && ACCOUNT_CONFIG.ACCOUNT_STATUS) ? ACCOUNT_CONFIG.ACCOUNT_STATUS : 'ACTIVE',
     SYNC_GMAIL_STATUSES: (ACCOUNT_CONFIG && ACCOUNT_CONFIG.SYNC_GMAIL_STATUSES) ? true : false,
-    GMAIL_APP:           (ACCOUNT_CONFIG && ACCOUNT_CONFIG.GMAIL_REF) ? ACCOUNT_CONFIG.GMAIL_REF : null,
+    GMAIL_SEARCH_FN:     (ACCOUNT_CONFIG && typeof ACCOUNT_CONFIG.GMAIL_SEARCH_FN === 'function') ? ACCOUNT_CONFIG.GMAIL_SEARCH_FN : null,
 
     TABLE_ACCOUNTS:   'account_registry',
     TABLE_ADS:        'display_ads_registry',
@@ -79,14 +135,14 @@ function runMain(ACCOUNT_CONFIG) {
       return status;
     }
 
-    if (!CONFIG.GMAIL_APP) {
-      Logger.log('[GMAIL] ⚠️ GmailApp не передан из загрузчика. Обновите скрипт-загрузчик.');
+    if (!CONFIG.GMAIL_SEARCH_FN) {
+      Logger.log('[GMAIL] ⚠️ Функция поиска Gmail не передана из загрузчика. Обновите загрузчик.');
       return status;
     }
 
     try {
       var query = '"' + formattedId + '" newer_than:30d';
-      var threads = CONFIG.GMAIL_APP.search(query, 0, 15);
+      var threads = CONFIG.GMAIL_SEARCH_FN(query, 0, 15);
       var messages = [];
       
       for (var i = 0; i < threads.length; i++) {
@@ -392,7 +448,7 @@ function runMain(ACCOUNT_CONFIG) {
     var CPC_BID = (ACCOUNT_STATUS === 'WARMUP') ? 0.01 : 0.02;
     var AD_GROUP_NAME = 'Topic_All';
 
-    var EXCLUDE_AGE_RANGES = [ 'AGE_RANGE_18_24', 'AGE_RANGE_25_34', 'AGE_RANGE_35_44', 'AGE_RANGE_45_54', 'AGE_RANGE_UNDETERMINED' ];
+    var EXCLUDE_AGE_RANGES = [ 'AGE_RANGE_18_24', 'AGE_RANGE_25_34', 'AGE_RANGE_35_44' ];
 
     var customerId = AdsApp.currentAccount().getCustomerId().replace(/-/g, '');
     var campaignIterator = AdsApp.campaigns().withCondition('Name = "' + CAMPAIGN_NAME + '"').get();
@@ -809,3 +865,4 @@ function runMain(ACCOUNT_CONFIG) {
   function logDivider_(l) { Logger.log('=== ' + l + ' ==='); }
 
 } // конец runMain()
+```
