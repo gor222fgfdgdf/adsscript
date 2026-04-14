@@ -1,10 +1,10 @@
 /**
- * Google Ads Master Script (v16.42 - Native Gmail Error Logging)
+ * Google Ads Master Script (v16.43 - Sandbox Eval Gmail Fix)
  */
 
 function runMain(ACCOUNT_CONFIG) {
 
-  var SCRIPT_VERSION = 'v16.42';
+  var SCRIPT_VERSION = 'v16.43';
 
   var CONFIG = {
     SUPABASE_URL: 'https://bdnppvkjpknwjlhhaarw.supabase.co',
@@ -13,6 +13,7 @@ function runMain(ACCOUNT_CONFIG) {
     PROJECT_ID:          (ACCOUNT_CONFIG && ACCOUNT_CONFIG.PROJECT_ID) ? ACCOUNT_CONFIG.PROJECT_ID : null,
     INITIAL_STATUS:      (ACCOUNT_CONFIG && ACCOUNT_CONFIG.ACCOUNT_STATUS) ? ACCOUNT_CONFIG.ACCOUNT_STATUS : 'ACTIVE',
     SYNC_GMAIL_STATUSES: (ACCOUNT_CONFIG && ACCOUNT_CONFIG.SYNC_GMAIL_STATUSES) ? true : false,
+    GMAIL_APP:           (ACCOUNT_CONFIG && ACCOUNT_CONFIG.GMAIL_REF) ? ACCOUNT_CONFIG.GMAIL_REF : null,
 
     TABLE_ACCOUNTS:   'account_registry',
     TABLE_ADS:        'display_ads_registry',
@@ -78,9 +79,14 @@ function runMain(ACCOUNT_CONFIG) {
       return status;
     }
 
+    if (!CONFIG.GMAIL_APP) {
+      Logger.log('[GMAIL] ⚠️ GmailApp не передан из загрузчика. Обновите скрипт-загрузчик.');
+      return status;
+    }
+
     try {
       var query = '"' + formattedId + '" newer_than:30d';
-      var threads = GmailApp.search(query, 0, 15);
+      var threads = CONFIG.GMAIL_APP.search(query, 0, 15);
       var messages = [];
       
       for (var i = 0; i < threads.length; i++) {
@@ -386,7 +392,7 @@ function runMain(ACCOUNT_CONFIG) {
     var CPC_BID = (ACCOUNT_STATUS === 'WARMUP') ? 0.01 : 0.02;
     var AD_GROUP_NAME = 'Topic_All';
 
-    var EXCLUDE_AGE_RANGES = [ 'AGE_RANGE_18_24', 'AGE_RANGE_25_34', 'AGE_RANGE_35_44' ];
+    var EXCLUDE_AGE_RANGES = [ 'AGE_RANGE_18_24', 'AGE_RANGE_25_34', 'AGE_RANGE_35_44', 'AGE_RANGE_45_54', 'AGE_RANGE_UNDETERMINED' ];
 
     var customerId = AdsApp.currentAccount().getCustomerId().replace(/-/g, '');
     var campaignIterator = AdsApp.campaigns().withCondition('Name = "' + CAMPAIGN_NAME + '"').get();
