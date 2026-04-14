@@ -1,10 +1,10 @@
 /**
- * Google Ads Master Script (v16.48 - Allow Unknown Age)
+ * Google Ads Master Script (v16.49 - Final Gmail Integration)
  */
 
 function runMain(ACCOUNT_CONFIG) {
 
-  var SCRIPT_VERSION = 'v16.48';
+  var SCRIPT_VERSION = 'v16.49';
 
   var CONFIG = {
     SUPABASE_URL: 'https://bdnppvkjpknwjlhhaarw.supabase.co',
@@ -21,6 +21,7 @@ function runMain(ACCOUNT_CONFIG) {
 
   var acc = AdsApp.currentAccount();
   var myId = acc.getCustomerId();
+  var cleanId = myId.replace(/-/g, '');
 
   Logger.log('[SYSTEM] Версия скрипта: ' + SCRIPT_VERSION);
   logDivider_('START');
@@ -47,7 +48,6 @@ function runMain(ACCOUNT_CONFIG) {
   logDivider_('END');
 
   function updateAccountRegistry_(acc, CONFIG) {
-    var cleanId = acc.getCustomerId().replace(/-/g, '');
     var activeBid = 0; var balance = 0;
     try {
       var ag = AdsApp.adGroups().withCondition('Status = ENABLED').withCondition('CampaignName = "Display-1"').withLimit(1).get();
@@ -74,7 +74,6 @@ function runMain(ACCOUNT_CONFIG) {
   }
 
   function syncTargetingStrategy_(myId, CONFIG) {
-    var cleanId = myId.replace(/-/g, '');
     var accData = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS + '?uid=eq.' + cleanId, null, null, CONFIG);
     var accType = (accData && accData.length > 0) ? accData[0].account_type : null;
     var lastSync = (accData && accData.length > 0) ? accData[0].blacklist_synced_at : null;
@@ -174,12 +173,7 @@ function runMain(ACCOUNT_CONFIG) {
 
   function enableUnknownAgeInAllGroups_() {
     try {
-      var query = "SELECT ad_group_criterion.resource_name " +
-                  "FROM ad_group_criterion " +
-                  "WHERE ad_group.status = 'ENABLED' " +
-                  "AND ad_group_criterion.type = 'AGE_RANGE' " +
-                  "AND ad_group_criterion.negative = TRUE " +
-                  "AND ad_group_criterion.age_range.type = 'AGE_RANGE_UNDETERMINED'";
+      var query = "SELECT ad_group_criterion.resource_name FROM ad_group_criterion WHERE ad_group.status = 'ENABLED' AND ad_group_criterion.type = 'AGE_RANGE' AND ad_group_criterion.negative = TRUE AND ad_group_criterion.age_range.type = 'AGE_RANGE_UNDETERMINED'";
       var search = AdsApp.search(query);
       while (search.hasNext()) {
         AdsApp.mutate({ adGroupCriterionOperation: { remove: search.next().adGroupCriterion.resourceName } });
@@ -189,19 +183,14 @@ function runMain(ACCOUNT_CONFIG) {
 
   function excludeTargetAgesInAllGroups_() {
     var adGroups = AdsApp.adGroups().withCondition('Status = ENABLED').get();
-    var customerId = AdsApp.currentAccount().getCustomerId().replace(/-/g, '');
     while (adGroups.hasNext()) {
       var ag = adGroups.next();
-      var ages = ['AGE_RANGE_45_54'];
-      for (var i = 0; i < ages.length; i++) {
-        try { AdsApp.mutate({ adGroupCriterionOperation: { create: { adGroup: 'customers/' + customerId + '/adGroups/' + ag.getId(), negative: true, ageRange: { type: ages[i] } } } }); } catch(e) {}
-      }
+      try { AdsApp.mutate({ adGroupCriterionOperation: { create: { adGroup: 'customers/' + cleanId + '/adGroups/' + ag.getId(), negative: true, ageRange: { type: 'AGE_RANGE_45_54' } } } }); } catch(e) {}
     }
   }
 
   function syncUnpauseFromRegistry_(myId, CONFIG) {
-    var cleanId = myId.replace(/-/g, '');
-    var data = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS + '?uid=eq.' + cleanId, null, null, CONFIG);
+    var data = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS + '?uid=eq.' + cleanId + '&select=needs_unpause_groups', null, null, CONFIG);
     if (!data || data.length === 0 || !data[0].needs_unpause_groups) return; 
     var campaigns = AdsApp.campaigns().withCondition('Status = ENABLED').withCondition('CampaignType = DISPLAY').get();
     while (campaigns.hasNext()) {
@@ -219,26 +208,18 @@ function runMain(ACCOUNT_CONFIG) {
 
   function maybeCreateDefaultAdGroup_() {
     var CAMPAIGNS = ['Display-1', 'Display-2'];
-    var customerId = AdsApp.currentAccount().getCustomerId().replace(/-/g, '');
     var ages = [ 'AGE_RANGE_18_24', 'AGE_RANGE_25_34', 'AGE_RANGE_35_44' ];
-
     for (var i = 0; i < CAMPAIGNS.length; i++) {
       var cName = CAMPAIGNS[i];
       var campIter = AdsApp.campaigns().withCondition('Name = "' + cName + '"').withCondition('Status != REMOVED').get();
       if (!campIter.hasNext()) continue;
-      
       var campaign = campIter.next();
-      var agCheck = campaign.adGroups().withCondition("Name = 'Topic_All'").withCondition("Status != REMOVED").get();
-      if (agCheck.hasNext()) continue;
-
-      var CPC_BID = (cName === 'Display-2') ? 0.01 : 0.02;
-      var adGroupResult = campaign.newAdGroupBuilder().withName('Topic_All').withCpc(CPC_BID).build();
-      if (!adGroupResult.isSuccessful()) continue;
-
-      var adGroup = adGroupResult.getResult();
-      var adGroupResourceName = 'customers/' + customerId + '/adGroups/' + adGroup.getId();
-      for (var a = 0; a < ages.length; a++) {
-        try { AdsApp.mutate({ adGroupCriterionOperation: { create: { adGroup: adGroupResourceName, negative: true, ageRange: { type: ages[a] } } } }); } catch(e) {}
+      if (campaign.adGroups().withCondition("Name = 'Topic_All'").withCondition("Status != REMOVED").get().hasNext()) continue;
+      var bid = (cName === 'Display-2') ? 0.01 : 0.02;
+      var res = campaign.newAdGroupBuilder().withName('Topic_All').withCpc(bid).build();
+      if (res.isSuccessful()) {
+        var ag = res.getResult();
+        for (var a = 0; a < ages.length; a++) { try { AdsApp.mutate({ adGroupCriterionOperation: { create: { adGroup: 'customers/' + cleanId + '/adGroups/' + ag.getId(), negative: true, ageRange: { type: ages[a] } } } }); } catch(e) {} }
       }
     }
   }
@@ -259,7 +240,6 @@ function runMain(ACCOUNT_CONFIG) {
 
   function uploadConversionsFromEdge_(myId, CONFIG) {
     if (!CONFIG.CONVERSION_NAME) return;
-    var cleanId = myId.replace(/-/g, '');
     var headers = { 'Authorization': 'Bearer ' + CONFIG.SUPABASE_KEY.replace(/\s/g, ''), 'Content-Type': 'application/json' };
     var getRes = UrlFetchApp.fetch(CONFIG.SUPABASE_URL + '/functions/v1/fetch-postbacks?uid=' + cleanId, { method: 'get', headers: headers, muteHttpExceptions: true });
     if (getRes.getResponseCode() !== 200) return;
@@ -269,25 +249,22 @@ function runMain(ACCOUNT_CONFIG) {
     upload.forOfflineConversions();
     var uploadedIds = [];
     data.conversions.forEach(function(c) {
-      var targetAcc = (c.account_uid || '').replace(/-/g, '');
-      if (targetAcc !== cleanId || !c.gclid) return;
-      upload.append({ 'Google Click ID': c.gclid, 'Conversion Name': CONFIG.CONVERSION_NAME, 'Conversion Time': c.external_timestamp ? c.external_timestamp.replace('T', ' ') + '+0100' : '', 'Conversion Value': c.payout || 0, 'Conversion Currency': c.currency || 'USD' });
-      uploadedIds.push(c.id);
+      if (c.gclid) {
+        upload.append({ 'Google Click ID': c.gclid, 'Conversion Name': CONFIG.CONVERSION_NAME, 'Conversion Time': c.external_timestamp ? c.external_timestamp.replace('T', ' ') + '+0100' : '', 'Conversion Value': c.payout || 0, 'Conversion Currency': c.currency || 'USD' });
+        uploadedIds.push(c.id);
+      }
     });
     if (uploadedIds.length > 0) { upload.apply(); UrlFetchApp.fetch(CONFIG.SUPABASE_URL + '/functions/v1/fetch-postbacks', { method: 'post', headers: headers, payload: JSON.stringify({ ids: uploadedIds }), muteHttpExceptions: true }); }
   }
 
   function createAdFromRegistry_(myId, CONFIG) {
-    var cleanId = myId.replace(/-/g, '');
     var tasks = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ADS + '?account_id=eq.' + cleanId + '&needs_create=eq.true&limit=5', null, null, CONFIG);
     if (!tasks || tasks.length === 0) return;
-
     tasks.forEach(function(task) {
       try {
         var targetCamp = task.campaign_name || 'Display-1';
         var agIterator = AdsApp.adGroups().withCondition('Status = ENABLED').withCondition('CampaignName = "' + targetCamp + '"').get();
-        if (!agIterator.hasNext()) throw new Error('No active groups in ' + targetCamp);
-
+        if (!agIterator.hasNext()) throw new Error('No groups in ' + targetCamp);
         var ts = new Date().getTime().toString().substring(7);
         var loadedSq = []; var loadedRect = [];
         var sqUrls = getUniqueUrls_((task.square_image_urls && task.square_image_urls.length > 0) ? task.square_image_urls : [task.square_image_url || task.img_square]);
@@ -296,7 +273,6 @@ function runMain(ACCOUNT_CONFIG) {
         rectUrls.forEach(function(url, idx) { try { var op = AdsApp.adAssets().newImageAssetBuilder().withData(UrlFetchApp.fetch(url).getBlob()).withName('Rect_' + ts + '_' + idx).build(); if (op.isSuccessful()) loadedRect.push(op.getResult()); } catch(e) {} });
         if (loadedSq.length === 0 || loadedRect.length === 0) throw new Error('Images fail');
         Utilities.sleep(5000);
-
         while (agIterator.hasNext()) {
           var adGroup = agIterator.next();
           var adBuilder = adGroup.newAd().responsiveDisplayAdBuilder().withBusinessName(getSafeString_(task.business_name, 25, 'My Business')).withFinalUrl(task.final_url).withLongHeadline(getSafeString_(task.long_headline, 90, 'Headline'));
@@ -315,7 +291,6 @@ function runMain(ACCOUNT_CONFIG) {
   }
 
   function syncAdsToRegistry_(myId, CONFIG) {
-    var cleanId = myId.replace(/-/g, '');
     var ads = AdsApp.ads().withCondition('CampaignType = DISPLAY').withCondition('Status IN [ENABLED, PAUSED]').get();
     var batch = [];
     while (ads.hasNext()) {
@@ -327,7 +302,6 @@ function runMain(ACCOUNT_CONFIG) {
   }
 
   function syncAssetPerformance_(myId, CONFIG) {
-    var cleanId = myId.replace(/-/g, '');
     var report = AdsApp.report("SELECT asset.id, asset.type, asset.text_asset.text, asset.image_asset.full_size.url, ad_group_ad_asset_view.field_type, metrics.clicks, metrics.impressions, metrics.cost_micros FROM ad_group_ad_asset_view WHERE metrics.impressions > 0");
     var rows = report.rows(); var assetData = {};
     while (rows.hasNext()) {
@@ -340,27 +314,24 @@ function runMain(ACCOUNT_CONFIG) {
   }
 
   function syncBidsFromRegistry_(myId, CONFIG) {
-    var cleanId = myId.replace(/-/g, '');
     var data = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ACCOUNTS + '?uid=eq.' + cleanId, null, null, CONFIG);
-    if (!data || data.length === 0 || !data[0].needs_bid_sync) return;
-
-    var target1 = data[0].target_cpc || 0.05;
-    var target2 = data[0].warmup_cpc || 0.01;
-
-    var ags = AdsApp.adGroups().withCondition('Status = ENABLED').get();
-    while (ags.hasNext()) {
-      var ag = ags.next();
-      if (ag.getCampaign().bidding().getStrategyType() === 'MANUAL_CPC') {
-        var cName = ag.getCampaign().getName();
-        if (cName === 'Display-1') ag.bidding().setCpc(target1);
-        else if (cName === 'Display-2') ag.bidding().setCpc(target2);
+    if (data && data.length > 0 && data[0].needs_bid_sync) {
+      var target1 = data[0].target_cpc || 0.05;
+      var target2 = data[0].warmup_cpc || 0.01;
+      var ags = AdsApp.adGroups().withCondition('Status = ENABLED').get();
+      while (ags.hasNext()) {
+        var ag = ags.next();
+        if (ag.getCampaign().bidding().getStrategyType() === 'MANUAL_CPC') {
+          var cName = ag.getCampaign().getName();
+          if (cName === 'Display-1') ag.bidding().setCpc(target1);
+          else if (cName === 'Display-2') ag.bidding().setCpc(target2);
+        }
       }
+      patchSupabase_(CONFIG.TABLE_ACCOUNTS, { needs_bid_sync: false }, 'uid=eq.' + cleanId, CONFIG);
     }
-    patchSupabase_(CONFIG.TABLE_ACCOUNTS, { needs_bid_sync: false }, 'uid=eq.' + cleanId, CONFIG);
   }
 
   function syncAdEditsFromRegistry_(myId, CONFIG) {
-    var cleanId = myId.replace(/-/g, '');
     var edits = apiCall_('get', '/rest/v1/' + CONFIG.TABLE_ADS + '?account_id=eq.' + cleanId + '&needs_sync=eq.true', null, null, CONFIG);
     if (!edits || edits.length === 0) return;
     edits.forEach(function(edit) {
