@@ -1,8 +1,9 @@
 /**
- * Google Ads Master Script (v16.56 - Stable Working Release)
+ * Google Ads Master Script (v16.57 - Full Stable Release)
+ * Updates: Policy Status restored, Safe DB Patching, Strict Routing.
  */
 function runMain(cfg) {
-  var SCRIPT_VERSION = 'v16.56';
+  var SCRIPT_VERSION = 'v16.57';
   var acc = AdsApp.currentAccount();
   var cleanId = acc.getCustomerId().replace(/-/g, '');
   
@@ -22,8 +23,12 @@ function runMain(cfg) {
     }
   };
 
-  var accData = api('get', 'account_registry?uid=eq.' + cleanId + '&select=account_status', null, ctx);
-  ctx.status = (accData && accData.length > 0 && accData[0].account_status) ? accData[0].account_status : ctx.config.ACCOUNT_STATUS;
+  // 1. Получаем текущие данные из БД
+  var accData = api('get', 'account_registry?uid=eq.' + cleanId, null, ctx);
+  ctx.dbData = (accData && accData.length > 0) ? accData[0] : null;
+  
+  // 2. Маршрутизация кампаний
+  ctx.status = ctx.dbData ? ctx.dbData.account_status : ctx.config.ACCOUNT_STATUS;
   ctx.targetCamp = (ctx.status === 'WARMUP') ? 'Display-2' : 'Display-1';
 
   Logger.log('[SYSTEM] Версия: ' + SCRIPT_VERSION + ' | Статус: ' + ctx.status + ' | Целевая кампания: ' + ctx.targetCamp);
@@ -37,8 +42,10 @@ function runMain(cfg) {
   ];
 
   modules.forEach(function(mod) {
-    try { mod(ctx); } catch (e) {}
+    try { mod(ctx); } catch (e) { Logger.log('[MODULE ERROR] ' + mod.name + ': ' + e.message); }
   });
+
+  // --- МОДУЛИ ---
 
   function updateAccountRegistry_(ctx) {
     var activeBid = 0, balance = 0;
@@ -56,13 +63,18 @@ function runMain(cfg) {
       account_status: ctx.status
     };
     if (ctx.config.PROJECT_ID) payload.project_id = ctx.config.PROJECT_ID;
-    api('post', 'account_registry', payload, ctx, 'resolution=merge-duplicates');
+
+    // БЕЗОПАСНОЕ ОБНОВЛЕНИЕ: PATCH если аккаунт есть, POST если новый
+    if (ctx.dbData) {
+      api('patch', 'account_registry?uid=eq.' + ctx.cleanId, payload, ctx);
+    } else {
+      api('post', 'account_registry', payload, ctx);
+    }
   }
 
   function syncTargetingStrategy_(ctx) {
-    var accData = api('get', 'account_registry?uid=eq.' + ctx.cleanId, null, ctx);
-    var accType = accData && accData.length ? accData[0].account_type : null;
-    var lastSync = accData && accData.length ? accData[0].blacklist_synced_at : null;
+    var accType = ctx.dbData ? ctx.dbData.account_type : null;
+    var lastSync = ctx.dbData ? ctx.dbData.blacklist_synced_at : null;
 
     if (accType === 'whitelist') {
       var topics = AdsApp.display().topics().get();
@@ -130,8 +142,7 @@ function runMain(cfg) {
   }
 
   function syncUnpauseFromRegistry_(ctx) {
-    var data = api('get', 'account_registry?uid=eq.' + ctx.cleanId, null, ctx);
-    if (data && data.length && data[0].needs_unpause_groups) {
+    if (ctx.dbData && ctx.dbData.needs_unpause_groups) {
       var camps = AdsApp.campaigns().withCondition('Status = ENABLED').withCondition('CampaignType = DISPLAY').get();
       while (camps.hasNext()) { var ags = camps.next().adGroups().withCondition('Status = PAUSED').get(); while (ags.hasNext()) ags.next().enable(); }
       api('patch', 'account_registry?uid=eq.' + ctx.cleanId, { needs_unpause_groups: false }, ctx);
@@ -199,7 +210,7 @@ function runMain(cfg) {
         var ts = new Date().getTime().toString().substring(7), sq = [], rect = [];
         getUnq(t.square_image_urls || [t.square_image_url || t.img_square]).forEach(function(u, i) { try { var r = AdsApp.adAssets().newImageAssetBuilder().withData(UrlFetchApp.fetch(u).getBlob()).withName('S_'+ts+'_'+i).build(); if (r.isSuccessful()) sq.push(r.getResult()); } catch(e){} });
         getUnq(t.landscape_image_urls || [t.rectangle_image_url || t.img_rect]).forEach(function(u, i) { try { var r = AdsApp.adAssets().newImageAssetBuilder().withData(UrlFetchApp.fetch(u).getBlob()).withName('R_'+ts+'_'+i).build(); if (r.isSuccessful()) rect.push(r.getResult()); } catch(e){} });
-        if (!sq.length || !rect.length) throw new Error('Img fail');
+        if (!sq.length || !rect.length) throw new Error('Failed to load images');
         Utilities.sleep(4000);
 
         while (ags.hasNext()) {
@@ -219,7 +230,18 @@ function runMain(cfg) {
     var ads = AdsApp.ads().withCondition('CampaignType = DISPLAY').withCondition('Status IN [ENABLED, PAUSED]').get(), batch = [];
     while (ads.hasNext()) {
       var ad = ads.next(), st = ad.getStatsFor('TODAY');
-      batch.push({ ad_id: ad.getId().toString(), account_id: ctx.cleanId, campaign_name: ad.getCampaign().getName(), type: ad.getType(), final_url: ad.urls().getFinalUrl() || '', clicks: st.getClicks(), cost: st.getCost(), status: ad.isPaused() ? 'PAUSED' : 'ENABLED', updated_at: new Date().toISOString() });
+      batch.push({ 
+        ad_id: ad.getId().toString(), 
+        account_id: ctx.cleanId, 
+        campaign_name: ad.getCampaign().getName(), 
+        type: ad.getType(), 
+        final_url: ad.urls().getFinalUrl() || '', 
+        clicks: st.getClicks(), 
+        cost: st.getCost(), 
+        status: ad.isPaused() ? 'PAUSED' : 'ENABLED',
+        policy_status: ad.getPolicyApprovalStatus(), // ВОССТАНОВЛЕН СТАТУС МОДЕРАЦИИ
+        updated_at: new Date().toISOString() 
+      });
       if (batch.length >= 50) { api('post', 'display_ads_registry', batch, ctx, 'resolution=merge-duplicates'); batch = []; }
     }
     if (batch.length) api('post', 'display_ads_registry', batch, ctx, 'resolution=merge-duplicates');
@@ -238,10 +260,9 @@ function runMain(cfg) {
   }
 
   function syncBidsFromRegistry_(ctx) {
-    var data = api('get', 'account_registry?uid=eq.' + ctx.cleanId, null, ctx);
-    if (!data || !data.length || !data[0].needs_bid_sync) return;
+    if (!ctx.dbData || !ctx.dbData.needs_bid_sync) return;
 
-    var targetBid = (ctx.status === 'WARMUP') ? (data[0].warmup_cpc || 0.01) : (data[0].target_cpc || 0.05);
+    var targetBid = (ctx.status === 'WARMUP') ? (ctx.dbData.warmup_cpc || 0.01) : (ctx.dbData.target_cpc || 0.05);
 
     var ags = AdsApp.adGroups().withCondition('Status = ENABLED').withCondition('CampaignName = "' + ctx.targetCamp + '"').get();
     while (ags.hasNext()) {
@@ -277,6 +298,7 @@ function runMain(cfg) {
     }
   }
 
+  // Универсальный API-контроллер
   function api(method, route, payload, ctx, prefer) {
     var headers = { 'apikey': ctx.config.SUPABASE_KEY, 'Authorization': 'Bearer ' + ctx.config.SUPABASE_KEY, 'Content-Type': 'application/json' };
     if (prefer) headers['Prefer'] = prefer;
