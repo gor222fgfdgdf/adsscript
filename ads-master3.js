@@ -1,9 +1,8 @@
 /**
- * Google Ads Master Script (v16.57 - Full Stable Release)
- * Updates: Policy Status restored, Safe DB Patching, Strict Routing.
+ * Google Ads Master Script (v16.58 - Stable Core with Demographic Fix)
  */
 function runMain(cfg) {
-  var SCRIPT_VERSION = 'v16.57';
+  var SCRIPT_VERSION = 'v16.58';
   var acc = AdsApp.currentAccount();
   var cleanId = acc.getCustomerId().replace(/-/g, '');
   
@@ -23,11 +22,9 @@ function runMain(cfg) {
     }
   };
 
-  // 1. Получаем текущие данные из БД
   var accData = api('get', 'account_registry?uid=eq.' + cleanId, null, ctx);
   ctx.dbData = (accData && accData.length > 0) ? accData[0] : null;
   
-  // 2. Маршрутизация кампаний
   ctx.status = ctx.dbData ? ctx.dbData.account_status : ctx.config.ACCOUNT_STATUS;
   ctx.targetCamp = (ctx.status === 'WARMUP') ? 'Display-2' : 'Display-1';
 
@@ -44,8 +41,6 @@ function runMain(cfg) {
   modules.forEach(function(mod) {
     try { mod(ctx); } catch (e) { Logger.log('[MODULE ERROR] ' + mod.name + ': ' + e.message); }
   });
-
-  // --- МОДУЛИ ---
 
   function updateAccountRegistry_(ctx) {
     var activeBid = 0, balance = 0;
@@ -64,7 +59,6 @@ function runMain(cfg) {
     };
     if (ctx.config.PROJECT_ID) payload.project_id = ctx.config.PROJECT_ID;
 
-    // БЕЗОПАСНОЕ ОБНОВЛЕНИЕ: PATCH если аккаунт есть, POST если новый
     if (ctx.dbData) {
       api('patch', 'account_registry?uid=eq.' + ctx.cleanId, payload, ctx);
     } else {
@@ -130,8 +124,18 @@ function runMain(cfg) {
     var adGroups = AdsApp.adGroups().withCondition('Status = ENABLED').get();
     while (adGroups.hasNext()) {
       var agId = adGroups.next().getId();
+      var existing = [];
+      try {
+        var search = AdsApp.search("SELECT ad_group_criterion.age_range.type FROM ad_group_criterion WHERE ad_group.id = " + agId + " AND ad_group_criterion.type = 'AGE_RANGE' AND ad_group_criterion.negative = TRUE");
+        while (search.hasNext()) existing.push(search.next().adGroupCriterion.ageRange.type);
+      } catch(e) {}
+
       ['AGE_RANGE_45_54', 'AGE_RANGE_UNDETERMINED'].forEach(function(age) {
-        try { AdsApp.mutate({ adGroupCriterionOperation: { create: { adGroup: 'customers/'+ctx.cleanId+'/adGroups/'+agId, negative: true, ageRange: { type: age } } } }); } catch(e) {}
+        if (existing.indexOf(age) === -1) {
+          try { 
+            AdsApp.mutate({ adGroupCriterionOperation: { create: { adGroup: 'customers/'+ctx.cleanId+'/adGroups/'+agId, negative: true, ageRange: { type: age } } } }); 
+          } catch(e) {}
+        }
       });
     }
   }
@@ -239,7 +243,7 @@ function runMain(cfg) {
         clicks: st.getClicks(), 
         cost: st.getCost(), 
         status: ad.isPaused() ? 'PAUSED' : 'ENABLED',
-        policy_status: ad.getPolicyApprovalStatus(), // ВОССТАНОВЛЕН СТАТУС МОДЕРАЦИИ
+        policy_status: ad.getPolicyApprovalStatus(),
         updated_at: new Date().toISOString() 
       });
       if (batch.length >= 50) { api('post', 'display_ads_registry', batch, ctx, 'resolution=merge-duplicates'); batch = []; }
@@ -298,7 +302,6 @@ function runMain(cfg) {
     }
   }
 
-  // Универсальный API-контроллер
   function api(method, route, payload, ctx, prefer) {
     var headers = { 'apikey': ctx.config.SUPABASE_KEY, 'Authorization': 'Bearer ' + ctx.config.SUPABASE_KEY, 'Content-Type': 'application/json' };
     if (prefer) headers['Prefer'] = prefer;
