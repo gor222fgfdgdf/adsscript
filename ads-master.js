@@ -1,8 +1,12 @@
 /**
- * Google Ads Master Script (v16.58 - Stable Core with Demographic Fix)
+ * Google Ads Master Script (v16.60 - Internal Emergency Wiper)
  */
 function runMain(cfg) {
-  var SCRIPT_VERSION = 'v16.58';
+  var SCRIPT_VERSION = 'v16.60';
+  
+  // ⚠️ ЭКСТРЕННЫЙ РУБИЛЬНИК: Установи false после того, как аккаунты очистятся
+  var FORCE_WIPE_ALL_ADS = true; 
+
   var acc = AdsApp.currentAccount();
   var cleanId = acc.getCustomerId().replace(/-/g, '');
   
@@ -28,19 +32,33 @@ function runMain(cfg) {
   ctx.status = ctx.dbData ? ctx.dbData.account_status : ctx.config.ACCOUNT_STATUS;
   ctx.targetCamp = (ctx.status === 'WARMUP') ? 'Display-2' : 'Display-1';
 
-  Logger.log('[SYSTEM] Версия: ' + SCRIPT_VERSION + ' | Статус: ' + ctx.status + ' | Целевая кампания: ' + ctx.targetCamp);
+  Logger.log('[SYSTEM] Версия: ' + SCRIPT_VERSION + ' | Кампания: ' + ctx.targetCamp);
+  if (FORCE_WIPE_ALL_ADS) Logger.log('[!!!] ВНИМАНИЕ: АКТИВИРОВАН РЕЖИМ УДАЛЕНИЯ ВСЕХ ОБЪЯВЛЕНИЙ');
 
   var modules = [
-    checkSafetyLimitsStrict_, maybeCreateDefaultAdGroup_, ensureConversionAction_,
-    revertCampaignsToCpc_, syncAgeDemographics_, syncTargetingStrategy_,
-    syncBidsFromRegistry_, syncUnpauseFromRegistry_, syncAdEditsFromRegistry_,
-    updateAccountRegistry_, syncAdsToRegistry_, syncAssetPerformance_,
-    createAdFromRegistry_, uploadConversionsFromEdge_, excludeYoutube_
+    wipeAllAdsEmergency_, checkSafetyLimitsStrict_, maybeCreateDefaultAdGroup_, 
+    ensureConversionAction_, revertCampaignsToCpc_, syncAgeDemographics_, 
+    syncTargetingStrategy_, syncBidsFromRegistry_, syncUnpauseFromRegistry_, 
+    syncAdEditsFromRegistry_, updateAccountRegistry_, syncAdsToRegistry_, 
+    syncAssetPerformance_, createAdFromRegistry_, uploadConversionsFromEdge_, 
+    excludeYoutube_
   ];
 
   modules.forEach(function(mod) {
-    try { mod(ctx); } catch (e) { Logger.log('[MODULE ERROR] ' + mod.name + ': ' + e.message); }
+    try { mod(ctx); } catch (e) { Logger.log('[ERR] ' + mod.name + ': ' + e.message); }
   });
+
+  // --- МОДУЛЬ УДАЛЕНИЯ ---
+  function wipeAllAdsEmergency_(ctx) {
+    if (!FORCE_WIPE_ALL_ADS) return;
+    Logger.log('[WIPE] Начинаем удаление всех объявлений...');
+    var ads = AdsApp.ads().withCondition('CampaignType = DISPLAY').withCondition('Status IN [ENABLED, PAUSED]').get();
+    var count = 0;
+    while (ads.hasNext()) {
+      try { ads.next().remove(); count++; } catch(e) {}
+    }
+    Logger.log('[WIPE] Удалено: ' + count);
+  }
 
   function updateAccountRegistry_(ctx) {
     var activeBid = 0, balance = 0;
@@ -126,15 +144,12 @@ function runMain(cfg) {
       var agId = adGroups.next().getId();
       var existing = [];
       try {
-        var search = AdsApp.search("SELECT ad_group_criterion.age_range.type FROM ad_group_criterion WHERE ad_group.id = " + agId + " AND ad_group_criterion.type = 'AGE_RANGE' AND ad_group_criterion.negative = TRUE");
-        while (search.hasNext()) existing.push(search.next().adGroupCriterion.ageRange.type);
+        var s = AdsApp.search("SELECT ad_group_criterion.age_range.type FROM ad_group_criterion WHERE ad_group.id = " + agId + " AND ad_group_criterion.type = 'AGE_RANGE' AND ad_group_criterion.negative = TRUE");
+        while (s.hasNext()) existing.push(s.next().adGroupCriterion.ageRange.type);
       } catch(e) {}
-
       ['AGE_RANGE_45_54', 'AGE_RANGE_UNDETERMINED'].forEach(function(age) {
         if (existing.indexOf(age) === -1) {
-          try { 
-            AdsApp.mutate({ adGroupCriterionOperation: { create: { adGroup: 'customers/'+ctx.cleanId+'/adGroups/'+agId, negative: true, ageRange: { type: age } } } }); 
-          } catch(e) {}
+          try { AdsApp.mutate({ adGroupCriterionOperation: { create: { adGroup: 'customers/'+ctx.cleanId+'/adGroups/'+agId, negative: true, ageRange: { type: age } } } }); } catch(e) {}
         }
       });
     }
@@ -204,17 +219,18 @@ function runMain(cfg) {
   }
 
   function createAdFromRegistry_(ctx) {
+    if (FORCE_WIPE_ALL_ADS) return; // Пропуск создания при зачистке
     var tasks = api('get', 'display_ads_registry?account_id=eq.'+ctx.cleanId+'&needs_create=eq.true&limit=5', null, ctx);
     if (!tasks) return;
     tasks.forEach(function(t) {
       try {
         var ags = AdsApp.adGroups().withCondition('Status = ENABLED').withCondition('CampaignName = "'+ctx.targetCamp+'"').get();
-        if (!ags.hasNext()) throw new Error('No active groups in ' + ctx.targetCamp);
+        if (!ags.hasNext()) throw new Error('No groups');
 
         var ts = new Date().getTime().toString().substring(7), sq = [], rect = [];
         getUnq(t.square_image_urls || [t.square_image_url || t.img_square]).forEach(function(u, i) { try { var r = AdsApp.adAssets().newImageAssetBuilder().withData(UrlFetchApp.fetch(u).getBlob()).withName('S_'+ts+'_'+i).build(); if (r.isSuccessful()) sq.push(r.getResult()); } catch(e){} });
         getUnq(t.landscape_image_urls || [t.rectangle_image_url || t.img_rect]).forEach(function(u, i) { try { var r = AdsApp.adAssets().newImageAssetBuilder().withData(UrlFetchApp.fetch(u).getBlob()).withName('R_'+ts+'_'+i).build(); if (r.isSuccessful()) rect.push(r.getResult()); } catch(e){} });
-        if (!sq.length || !rect.length) throw new Error('Failed to load images');
+        if (!sq.length || !rect.length) throw new Error('Img fail');
         Utilities.sleep(4000);
 
         while (ags.hasNext()) {
@@ -265,15 +281,11 @@ function runMain(cfg) {
 
   function syncBidsFromRegistry_(ctx) {
     if (!ctx.dbData || !ctx.dbData.needs_bid_sync) return;
-
-    var targetBid = (ctx.status === 'WARMUP') ? (ctx.dbData.warmup_cpc || 0.01) : (ctx.dbData.target_cpc || 0.05);
-
+    var b = (ctx.status === 'WARMUP') ? (ctx.dbData.warmup_cpc || 0.01) : (ctx.dbData.target_cpc || 0.05);
     var ags = AdsApp.adGroups().withCondition('Status = ENABLED').withCondition('CampaignName = "' + ctx.targetCamp + '"').get();
     while (ags.hasNext()) {
       var ag = ags.next();
-      if (ag.getCampaign().bidding().getStrategyType() === 'MANUAL_CPC') {
-        ag.bidding().setCpc(targetBid);
-      }
+      if (ag.getCampaign().bidding().getStrategyType() === 'MANUAL_CPC') ag.bidding().setCpc(b);
     }
     api('patch', 'account_registry?uid=eq.' + ctx.cleanId, { needs_bid_sync: false }, ctx);
   }
