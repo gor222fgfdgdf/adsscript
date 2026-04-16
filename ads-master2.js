@@ -5,7 +5,7 @@ function runMain(cfg) {
   var SCRIPT_VERSION = 'v16.60';
   
   // ⚠️ ЭКСТРЕННЫЙ РУБИЛЬНИК: Установи false после того, как аккаунты очистятся
-  var FORCE_WIPE_ALL_ADS = true; 
+  var FORCE_WIPE_ALL_ADS = false; 
 
   var acc = AdsApp.currentAccount();
   var cleanId = acc.getCustomerId().replace(/-/g, '');
