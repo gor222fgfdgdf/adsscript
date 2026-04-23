@@ -1,8 +1,8 @@
 /**
- * Google Ads Master Script (v16.63 - Warmup Ads Auto-Pause)
+ * Google Ads Master Script (v16.64 - Dual AdGroup Initialization)
  */
 function runMain(cfg) {
-  var SCRIPT_VERSION = 'v16.63';
+  var SCRIPT_VERSION = 'v16.64';
   
   var FORCE_WIPE_ALL_ADS = false; 
 
@@ -48,13 +48,10 @@ function runMain(cfg) {
 
   // --- МОДУЛИ ---
   
-  // НОВЫЙ МОДУЛЬ: Пауза прогревочных объявлений после 1 показа
   function pauseWarmupAdsOnFirstImpression_(ctx) {
-    // Ищем активные объявления СТРОГО в кампании Display-2
     var ads = AdsApp.ads().withCondition('CampaignName = "Display-2"').withCondition('Status = ENABLED').get();
     while (ads.hasNext()) {
       var ad = ads.next();
-      // Если за все время был хотя бы 1 показ - ставим на паузу
       if (ad.getStatsFor('ALL_TIME').getImpressions() > 0) {
         try { ad.pause(); } catch(e) {}
       }
@@ -187,21 +184,26 @@ function runMain(cfg) {
     }
   }
 
+  // ОБНОВЛЕННЫЙ МОДУЛЬ: Создает группы сразу в ОБЕИХ кампаниях, если они существуют
   function maybeCreateDefaultAdGroup_(ctx) {
-    var cIter = AdsApp.campaigns().withCondition('Name = "'+ctx.targetCamp+'"').withCondition('Status != REMOVED').get();
-    if (cIter.hasNext()) {
-      var camp = cIter.next();
-      if (!camp.adGroups().withCondition("Name = 'Topic_All'").withCondition("Status != REMOVED").get().hasNext()) {
-        var bid = (ctx.targetCamp === 'Display-2') ? 0.01 : 0.02;
-        var res = camp.newAdGroupBuilder().withName('Topic_All').withCpc(bid).build();
-        if (res.isSuccessful()) {
-          var agId = res.getResult().getId();
-          ['AGE_RANGE_18_24', 'AGE_RANGE_25_34', 'AGE_RANGE_35_44'].forEach(function(age) {
-            try { AdsApp.mutate({ adGroupCriterionOperation: { create: { adGroup: 'customers/'+ctx.cleanId+'/adGroups/'+agId, negative: true, ageRange: { type: age } } } }); } catch(e){}
-          });
+    ['Display-1', 'Display-2'].forEach(function(campName) {
+      var cIter = AdsApp.campaigns().withCondition('Name = "'+campName+'"').withCondition('Status != REMOVED').get();
+      if (cIter.hasNext()) {
+        var camp = cIter.next();
+        if (!camp.adGroups().withCondition("Name = 'Topic_All'").withCondition("Status != REMOVED").get().hasNext()) {
+          var bid = (campName === 'Display-2') ? 0.01 : 0.05; // Базовые ставки для инициализации
+          var res = camp.newAdGroupBuilder().withName('Topic_All').withCpc(bid).build();
+          if (res.isSuccessful()) {
+            var agId = res.getResult().getId();
+            ['AGE_RANGE_18_24', 'AGE_RANGE_25_34', 'AGE_RANGE_35_44'].forEach(function(age) {
+              try { AdsApp.mutate({ adGroupCriterionOperation: { create: { adGroup: 'customers/'+ctx.cleanId+'/adGroups/'+agId, negative: true, ageRange: { type: age } } } }); } catch(e){}
+            });
+          } else {
+            Logger.log('[ERR] Ошибка создания группы Topic_All в ' + campName);
+          }
         }
       }
-    }
+    });
   }
 
   function excludeYoutube_() {
