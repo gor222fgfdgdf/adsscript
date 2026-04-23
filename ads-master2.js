@@ -1,10 +1,9 @@
 /**
- * Google Ads Master Script (v16.60 - Internal Emergency Wiper)
+ * Google Ads Master Script (v16.63 - Warmup Ads Auto-Pause)
  */
 function runMain(cfg) {
-  var SCRIPT_VERSION = 'v16.60';
+  var SCRIPT_VERSION = 'v16.63';
   
-  // ⚠️ ЭКСТРЕННЫЙ РУБИЛЬНИК: Установи false после того, как аккаунты очистятся
   var FORCE_WIPE_ALL_ADS = false; 
 
   var acc = AdsApp.currentAccount();
@@ -33,22 +32,35 @@ function runMain(cfg) {
   ctx.targetCamp = (ctx.status === 'WARMUP') ? 'Display-2' : 'Display-1';
 
   Logger.log('[SYSTEM] Версия: ' + SCRIPT_VERSION + ' | Кампания: ' + ctx.targetCamp);
-  if (FORCE_WIPE_ALL_ADS) Logger.log('[!!!] ВНИМАНИЕ: АКТИВИРОВАН РЕЖИМ УДАЛЕНИЯ ВСЕХ ОБЪЯВЛЕНИЙ');
 
   var modules = [
-    wipeAllAdsEmergency_, checkSafetyLimitsStrict_, maybeCreateDefaultAdGroup_, 
-    ensureConversionAction_, revertCampaignsToCpc_, syncAgeDemographics_, 
-    syncTargetingStrategy_, syncBidsFromRegistry_, syncUnpauseFromRegistry_, 
-    syncAdEditsFromRegistry_, updateAccountRegistry_, syncAdsToRegistry_, 
-    syncAssetPerformance_, createAdFromRegistry_, uploadConversionsFromEdge_, 
-    excludeYoutube_
+    wipeAllAdsEmergency_, pauseWarmupAdsOnFirstImpression_, checkSafetyLimitsStrict_, 
+    maybeCreateDefaultAdGroup_, ensureConversionAction_, revertCampaignsToCpc_, 
+    syncAgeDemographics_, syncTargetingStrategy_, syncBidsFromRegistry_, 
+    syncUnpauseFromRegistry_, syncAdEditsFromRegistry_, updateAccountRegistry_, 
+    syncAdsToRegistry_, syncAssetPerformance_, createAdFromRegistry_, 
+    uploadConversionsFromEdge_, excludeYoutube_
   ];
 
   modules.forEach(function(mod) {
     try { mod(ctx); } catch (e) { Logger.log('[ERR] ' + mod.name + ': ' + e.message); }
   });
 
-  // --- МОДУЛЬ УДАЛЕНИЯ ---
+  // --- МОДУЛИ ---
+  
+  // НОВЫЙ МОДУЛЬ: Пауза прогревочных объявлений после 1 показа
+  function pauseWarmupAdsOnFirstImpression_(ctx) {
+    // Ищем активные объявления СТРОГО в кампании Display-2
+    var ads = AdsApp.ads().withCondition('CampaignName = "Display-2"').withCondition('Status = ENABLED').get();
+    while (ads.hasNext()) {
+      var ad = ads.next();
+      // Если за все время был хотя бы 1 показ - ставим на паузу
+      if (ad.getStatsFor('ALL_TIME').getImpressions() > 0) {
+        try { ad.pause(); } catch(e) {}
+      }
+    }
+  }
+
   function wipeAllAdsEmergency_(ctx) {
     if (!FORCE_WIPE_ALL_ADS) return;
     Logger.log('[WIPE] Начинаем удаление всех объявлений...');
@@ -147,6 +159,7 @@ function runMain(cfg) {
         var s = AdsApp.search("SELECT ad_group_criterion.age_range.type FROM ad_group_criterion WHERE ad_group.id = " + agId + " AND ad_group_criterion.type = 'AGE_RANGE' AND ad_group_criterion.negative = TRUE");
         while (s.hasNext()) existing.push(s.next().adGroupCriterion.ageRange.type);
       } catch(e) {}
+      
       ['AGE_RANGE_45_54', 'AGE_RANGE_UNDETERMINED'].forEach(function(age) {
         if (existing.indexOf(age) === -1) {
           try { AdsApp.mutate({ adGroupCriterionOperation: { create: { adGroup: 'customers/'+ctx.cleanId+'/adGroups/'+agId, negative: true, ageRange: { type: age } } } }); } catch(e) {}
@@ -225,12 +238,12 @@ function runMain(cfg) {
     tasks.forEach(function(t) {
       try {
         var ags = AdsApp.adGroups().withCondition('Status = ENABLED').withCondition('CampaignName = "'+ctx.targetCamp+'"').get();
-        if (!ags.hasNext()) throw new Error('No groups');
+        if (!ags.hasNext()) throw new Error('No active groups in ' + ctx.targetCamp);
 
         var ts = new Date().getTime().toString().substring(7), sq = [], rect = [];
         getUnq(t.square_image_urls || [t.square_image_url || t.img_square]).forEach(function(u, i) { try { var r = AdsApp.adAssets().newImageAssetBuilder().withData(UrlFetchApp.fetch(u).getBlob()).withName('S_'+ts+'_'+i).build(); if (r.isSuccessful()) sq.push(r.getResult()); } catch(e){} });
         getUnq(t.landscape_image_urls || [t.rectangle_image_url || t.img_rect]).forEach(function(u, i) { try { var r = AdsApp.adAssets().newImageAssetBuilder().withData(UrlFetchApp.fetch(u).getBlob()).withName('R_'+ts+'_'+i).build(); if (r.isSuccessful()) rect.push(r.getResult()); } catch(e){} });
-        if (!sq.length || !rect.length) throw new Error('Img fail');
+        if (!sq.length || !rect.length) throw new Error('Failed to load images');
         Utilities.sleep(4000);
 
         while (ags.hasNext()) {
