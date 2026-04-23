@@ -1,8 +1,8 @@
 /**
- * Google Ads Master Script (v16.64 - Dual AdGroup Initialization)
+ * Google Ads Master Script (v16.65 - Smart Warmup Auto-Pause with Labels)
  */
 function runMain(cfg) {
-  var SCRIPT_VERSION = 'v16.64';
+  var SCRIPT_VERSION = 'v16.65';
   
   var FORCE_WIPE_ALL_ADS = false; 
 
@@ -48,12 +48,31 @@ function runMain(cfg) {
 
   // --- МОДУЛИ ---
   
+  // УМНАЯ ПАУЗА: Останавливает объявление 1 раз и вешает ярлык
   function pauseWarmupAdsOnFirstImpression_(ctx) {
-    var ads = AdsApp.ads().withCondition('CampaignName = "Display-2"').withCondition('Status = ENABLED').get();
+    var labelName = 'AutoPaused_Warmup';
+    
+    // Создаем ярлык, если его еще нет
+    try {
+      if (!AdsApp.labels().withCondition("Name = '" + labelName + "'").get().hasNext()) {
+        AdsApp.createLabel(labelName, 'Отметка о том, что скрипт уже ставил объявление на паузу при первом показе', '#808080');
+      }
+    } catch(e) {}
+
+    // Ищем активные объявления без этого ярлыка в Display-2
+    var ads = AdsApp.ads()
+      .withCondition('CampaignName = "Display-2"')
+      .withCondition('Status = ENABLED')
+      .withCondition("LabelNames CONTAINS_NONE ['" + labelName + "']")
+      .get();
+      
     while (ads.hasNext()) {
       var ad = ads.next();
       if (ad.getStatsFor('ALL_TIME').getImpressions() > 0) {
-        try { ad.pause(); } catch(e) {}
+        try { 
+          ad.applyLabel(labelName); 
+          ad.pause(); 
+        } catch(e) {}
       }
     }
   }
@@ -184,22 +203,19 @@ function runMain(cfg) {
     }
   }
 
-  // ОБНОВЛЕННЫЙ МОДУЛЬ: Создает группы сразу в ОБЕИХ кампаниях, если они существуют
   function maybeCreateDefaultAdGroup_(ctx) {
     ['Display-1', 'Display-2'].forEach(function(campName) {
       var cIter = AdsApp.campaigns().withCondition('Name = "'+campName+'"').withCondition('Status != REMOVED').get();
       if (cIter.hasNext()) {
         var camp = cIter.next();
         if (!camp.adGroups().withCondition("Name = 'Topic_All'").withCondition("Status != REMOVED").get().hasNext()) {
-          var bid = (campName === 'Display-2') ? 0.01 : 0.05; // Базовые ставки для инициализации
+          var bid = (campName === 'Display-2') ? 0.01 : 0.05;
           var res = camp.newAdGroupBuilder().withName('Topic_All').withCpc(bid).build();
           if (res.isSuccessful()) {
             var agId = res.getResult().getId();
             ['AGE_RANGE_18_24', 'AGE_RANGE_25_34', 'AGE_RANGE_35_44'].forEach(function(age) {
               try { AdsApp.mutate({ adGroupCriterionOperation: { create: { adGroup: 'customers/'+ctx.cleanId+'/adGroups/'+agId, negative: true, ageRange: { type: age } } } }); } catch(e){}
             });
-          } else {
-            Logger.log('[ERR] Ошибка создания группы Topic_All в ' + campName);
           }
         }
       }
@@ -234,7 +250,7 @@ function runMain(cfg) {
   }
 
   function createAdFromRegistry_(ctx) {
-    if (FORCE_WIPE_ALL_ADS) return; // Пропуск создания при зачистке
+    if (FORCE_WIPE_ALL_ADS) return;
     var tasks = api('get', 'display_ads_registry?account_id=eq.'+ctx.cleanId+'&needs_create=eq.true&limit=5', null, ctx);
     if (!tasks) return;
     tasks.forEach(function(t) {
