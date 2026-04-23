@@ -1,8 +1,8 @@
 /**
- * Google Ads Master Script (v16.65 - Smart Warmup Auto-Pause with Labels)
+ * Google Ads Master Script (v16.66 - Bulletproof Safety Limits & Warmup Pause)
  */
 function runMain(cfg) {
-  var SCRIPT_VERSION = 'v16.65';
+  var SCRIPT_VERSION = 'v16.66';
   
   var FORCE_WIPE_ALL_ADS = false; 
 
@@ -47,19 +47,41 @@ function runMain(cfg) {
   });
 
   // --- МОДУЛИ ---
+
+  // ПУЛЕНЕПРОБИВАЕМЫЙ МОДУЛЬ ЛИМИТОВ
+  function checkSafetyLimitsStrict_(ctx) {
+    if (ctx.acc.getStatsFor('TODAY').getCost() >= (ctx.config.SAFETY_LIMIT + ctx.config.EXTRA_LIMIT)) {
+      Logger.log('[LIMIT] Сработал лимит безопасности. Экстренная остановка.');
+      var camps = AdsApp.campaigns().withCondition('Status = ENABLED').get();
+      while (camps.hasNext()) {
+        var c = camps.next();
+        
+        // 1. Блокируем кампанию
+        try { c.pause(); } catch(e) {}
+        
+        // 2. Блокируем все группы
+        var ags = c.adGroups().withCondition('Status = ENABLED').get();
+        while (ags.hasNext()) {
+          try { ags.next().pause(); } catch(e) {}
+        }
+        
+        // 3. Удаляем только не удаленные объявления
+        var ads = c.ads().withCondition('Status IN [ENABLED, PAUSED]').get();
+        while (ads.hasNext()) {
+          try { ads.next().remove(); } catch(e) {}
+        }
+      }
+    }
+  }
   
-  // УМНАЯ ПАУЗА: Останавливает объявление 1 раз и вешает ярлык
   function pauseWarmupAdsOnFirstImpression_(ctx) {
     var labelName = 'AutoPaused_Warmup';
-    
-    // Создаем ярлык, если его еще нет
     try {
       if (!AdsApp.labels().withCondition("Name = '" + labelName + "'").get().hasNext()) {
-        AdsApp.createLabel(labelName, 'Отметка о том, что скрипт уже ставил объявление на паузу при первом показе', '#808080');
+        AdsApp.createLabel(labelName, 'Отметка скрипта о первой паузе', '#808080');
       }
     } catch(e) {}
 
-    // Ищем активные объявления без этого ярлыка в Display-2
     var ads = AdsApp.ads()
       .withCondition('CampaignName = "Display-2"')
       .withCondition('Status = ENABLED')
@@ -336,13 +358,6 @@ function runMain(cfg) {
         }
       }
     });
-  }
-
-  function checkSafetyLimitsStrict_(ctx) {
-    if (ctx.acc.getStatsFor('TODAY').getCost() >= (ctx.config.SAFETY_LIMIT + ctx.config.EXTRA_LIMIT)) {
-      var camps = AdsApp.campaigns().withCondition('Status = ENABLED').get();
-      while (camps.hasNext()) { var c = camps.next(), ads = c.ads().get(); while (ads.hasNext()) ads.next().remove(); c.pause(); }
-    }
   }
 
   function api(method, route, payload, ctx, prefer) {
